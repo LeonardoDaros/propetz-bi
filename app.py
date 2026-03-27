@@ -1979,18 +1979,38 @@ def main():
                 _best_default_year = yr
                 break
 
+        # Restore filters from URL query params (survives F5 refresh)
+        _saved_years_param = st.query_params.get("y", "")
+        _saved_months_param = st.query_params.get("m", "")
+        if _saved_years_param and "global_years" not in st.session_state:
+            _restored_years = [y for y in _saved_years_param.split(",") if y in all_years_ordered]
+            _default_years = _restored_years if _restored_years else [_best_default_year] if _best_default_year else []
+        else:
+            _default_years = [_best_default_year] if _best_default_year else []
+        if _saved_months_param and "global_months" not in st.session_state:
+            _restored_months = [m for m in _saved_months_param.split(",") if m in month_options]
+            _default_months = _restored_months if _restored_months else month_options
+        else:
+            _default_months = month_options
+
         selected_years = st.multiselect(
             "Ano",
             options=all_years_ordered,
-            default=[_best_default_year] if _best_default_year else [],
+            default=_default_years,
             key="global_years"
         )
         selected_month_names = st.multiselect(
             "Mês",
             options=month_options,
-            default=month_options,
+            default=_default_months,
             key="global_months"
         )
+
+        # Save current filter selection to URL query params (persists on F5)
+        _current_params = dict(st.query_params)
+        _current_params["y"] = ",".join(selected_years)
+        _current_params["m"] = ",".join(selected_month_names)
+        st.query_params.update(_current_params)
 
         # Show active period count
         _n_active = sum(1 for i, lbl in enumerate(months)

@@ -302,86 +302,89 @@ def process_excel(xlsx_path):
             'monthly': monthly
         })
 
-    # ---- ANALISES ----
-    ws_an = wb['Analises']
+    # ---- ANALISES (optional – may not exist in lighter spreadsheets) ----
     analises = {}
-    for r in range(4, ws_an.max_row + 1):
-        name = ws_an.cell(r, 3).value
-        if not name:
-            continue
-        name = str(name).strip()
-        credit = ws_an.cell(r, 7).value
-        try:
-            credit = float(credit) if credit else 0
-        except:
-            credit = 0
-
-        totals = {}
-        for idx, year in enumerate(['2021','2022','2023','2024','2025','2026']):
-            v = ws_an.cell(r, 10 + idx).value
+    if 'Analises' in wb.sheetnames:
+        ws_an = wb['Analises']
+        for r in range(4, ws_an.max_row + 1):
+            name = ws_an.cell(r, 3).value
+            if not name:
+                continue
+            name = str(name).strip()
+            credit = ws_an.cell(r, 7).value
             try:
-                totals[year] = round(float(v), 2) if v else 0
+                credit = float(credit) if credit else 0
             except:
-                totals[year] = 0
+                credit = 0
 
-        mb = {}
-        for idx, year in enumerate(['2021','2022','2023','2024','2025']):
-            v = ws_an.cell(r, 17 + idx).value
-            try:
-                mb[year] = int(v) if v else 0
-            except:
-                mb[year] = 0
+            totals = {}
+            for idx, year in enumerate(['2021','2022','2023','2024','2025','2026']):
+                v = ws_an.cell(r, 10 + idx).value
+                try:
+                    totals[year] = round(float(v), 2) if v else 0
+                except:
+                    totals[year] = 0
 
-        am = {}
-        for idx, year in enumerate(['2021','2022','2023','2024','2025']):
-            v = ws_an.cell(r, 22 + idx).value
-            try:
-                am[year] = round(float(v), 2) if v else 0
-            except:
-                am[year] = 0
+            mb = {}
+            for idx, year in enumerate(['2021','2022','2023','2024','2025']):
+                v = ws_an.cell(r, 17 + idx).value
+                try:
+                    mb[year] = int(v) if v else 0
+                except:
+                    mb[year] = 0
 
-        analises[name] = {'credit': credit, 'totals': totals, 'months_bought': mb, 'avg_month': am}
+            am = {}
+            for idx, year in enumerate(['2021','2022','2023','2024','2025']):
+                v = ws_an.cell(r, 22 + idx).value
+                try:
+                    am[year] = round(float(v), 2) if v else 0
+                except:
+                    am[year] = 0
 
-    # ---- RECUPERAÇÃO ----
-    ws_rec = wb['Recuperação']
+            analises[name] = {'credit': credit, 'totals': totals, 'months_bought': mb, 'avg_month': am}
+
+    # ---- RECUPERAÇÃO (optional – may not exist in lighter spreadsheets) ----
     recuperacao = {}
-    for r in range(5, ws_rec.max_row + 1):
-        name = ws_rec.cell(r, 4).value
-        if not name:
-            continue
-        name = str(name).strip()
-        rec = ws_rec.cell(r, 9).value
-        atencao = ws_rec.cell(r, 10).value
-        if rec and str(rec).strip():
-            recuperacao[name] = 'Recuperação'
-        elif atencao and str(atencao).strip():
-            recuperacao[name] = 'Atenção'
-        else:
-            recuperacao[name] = 'Saudável'
+    if 'Recuperação' in wb.sheetnames:
+        ws_rec = wb['Recuperação']
+        for r in range(5, ws_rec.max_row + 1):
+            name = ws_rec.cell(r, 4).value
+            if not name:
+                continue
+            name = str(name).strip()
+            rec = ws_rec.cell(r, 9).value
+            atencao = ws_rec.cell(r, 10).value
+            if rec and str(rec).strip():
+                recuperacao[name] = 'Recuperação'
+            elif atencao and str(atencao).strip():
+                recuperacao[name] = 'Atenção'
+            else:
+                recuperacao[name] = 'Saudável'
 
-    # ---- PRODUTOS ABC ----
-    ws_dem = wb['Dados Demanda']
+    # ---- PRODUTOS ABC (optional) ----
     products = []
-    for r in range(6, ws_dem.max_row + 1):
-        cod = ws_dem.cell(r, 3).value
-        name = ws_dem.cell(r, 4).value
-        cat = ws_dem.cell(r, 5).value
-        total = ws_dem.cell(r, 30).value
-        abc = ws_dem.cell(r, 32).value
-        if not cod:
-            continue
-        try:
-            total_val = int(float(total)) if total else 0
-        except:
-            total_val = 0
-        products.append({
-            'code': str(cod).strip(),
-            'name': str(name).strip() if name else '',
-            'category': str(cat).strip() if cat else '',
-            'total_qty': total_val,
-            'abc': str(abc).strip() if abc else 'C'
-        })
-    products.sort(key=lambda x: -x['total_qty'])
+    if 'Dados Demanda' in wb.sheetnames:
+        ws_dem = wb['Dados Demanda']
+        for r in range(6, ws_dem.max_row + 1):
+            cod = ws_dem.cell(r, 3).value
+            name = ws_dem.cell(r, 4).value
+            cat = ws_dem.cell(r, 5).value
+            total = ws_dem.cell(r, 30).value
+            abc = ws_dem.cell(r, 32).value
+            if not cod:
+                continue
+            try:
+                total_val = int(float(total)) if total else 0
+            except:
+                total_val = 0
+            products.append({
+                'code': str(cod).strip(),
+                'name': str(name).strip() if name else '',
+                'category': str(cat).strip() if cat else '',
+                'total_qty': total_val,
+                'abc': str(abc).strip() if abc else 'C'
+            })
+        products.sort(key=lambda x: -x['total_qty'])
 
     # ---- CLIENT × PRODUCT DATA (Base de DadosProdutos, RIGHT SIDE cols 31+) ----
     client_products = []

@@ -7,17 +7,8 @@ import yaml
 import os
 import hashlib
 import json
+import uuid
 from datetime import datetime
-import extra_streamlit_components as stx
-
-# ============================================================
-# COOKIE MANAGER (persist login & filters across page reloads)
-# ============================================================
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager(key="propetz_cookies")
-
-cookie_manager = get_cookie_manager()
 
 # ============================================================
 # CONFIG
@@ -182,56 +173,86 @@ def verify_login(username, password):
 # ============================================================
 # AUTHENTICATION
 # ============================================================
-def save_session_cookie(username, user):
-    """Save login session to cookie so it survives page reloads."""
-    session_data = json.dumps({
+# ============================================================
+# SESSION PERSISTENCE (survives page refresh via query params + file)
+# ============================================================
+SESSIONS_DIR = os.path.join(os.path.dirname(__file__), ".sessions")
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+def _session_file(token):
+    return os.path.join(SESSIONS_DIR, f"{token}.json")
+
+def save_session(username, user):
+    """Save login session to file and put token in URL query params."""
+    token = hashlib.sha256(f"{username}_{uuid.uuid4()}".encode()).hexdigest()[:24]
+    data = {
         "username": username,
         "user_name": user["name"],
         "role": user["role"],
         "vendor_filter": user.get("vendor_filter", ""),
-    })
-    cookie_manager.set("propetz_session", session_data, key="set_session_cookie")
+        "filters": {},
+    }
+    with open(_session_file(token), 'w') as f:
+        json.dump(data, f)
+    st.query_params["s"] = token
 
-def restore_session_from_cookie():
-    """Try to restore login session from cookie. Returns True if restored."""
+def restore_session():
+    """Try to restore login session from query params token. Returns True if restored."""
     try:
-        raw = cookie_manager.get("propetz_session")
-        if raw:
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            # Verify user still exists
-            users = load_users()
-            if data["username"] in users["users"]:
-                st.session_state["authenticated"] = True
-                st.session_state["username"] = data["username"]
-                st.session_state["user_name"] = data["user_name"]
-                st.session_state["role"] = data["role"]
-                st.session_state["vendor_filter"] = data.get("vendor_filter") or None
-                return True
+        token = st.query_params.get("s")
+        if not token:
+            return False
+        fpath = _session_file(token)
+        if not os.path.exists(fpath):
+            return False
+        with open(fpath, 'r') as f:
+            data = json.load(f)
+        # Verify user still exists
+        users = load_users()
+        if data["username"] not in users["users"]:
+            return False
+        st.session_state["authenticated"] = True
+        st.session_state["username"] = data["username"]
+        st.session_state["user_name"] = data["user_name"]
+        st.session_state["role"] = data["role"]
+        st.session_state["vendor_filter"] = data.get("vendor_filter") or None
+        st.session_state["_session_token"] = token
+        # Restore saved filters
+        saved = data.get("filters", {})
+        if saved:
+            st.session_state["_restored_filters"] = saved
+        return True
+    except Exception:
+        return False
+
+def save_filters(years, month_names):
+    """Save selected filters to session file."""
+    try:
+        token = st.session_state.get("_session_token") or st.query_params.get("s")
+        if not token:
+            return
+        fpath = _session_file(token)
+        if not os.path.exists(fpath):
+            return
+        with open(fpath, 'r') as f:
+            data = json.load(f)
+        data["filters"] = {"years": years, "months": month_names}
+        with open(fpath, 'w') as f:
+            json.dump(data, f)
     except Exception:
         pass
-    return False
 
-def clear_session_cookie():
-    """Remove session cookie on logout."""
-    cookie_manager.delete("propetz_session", key="del_session_cookie")
-
-def save_filters_cookie(years, month_names, page_key):
-    """Save selected filters to cookie."""
+def clear_session():
+    """Remove session file and query param on logout."""
     try:
-        data = json.dumps({"years": years, "months": month_names, "page": page_key})
-        cookie_manager.set("propetz_filters", data, key="set_filters_cookie")
+        token = st.session_state.get("_session_token") or st.query_params.get("s")
+        if token:
+            fpath = _session_file(token)
+            if os.path.exists(fpath):
+                os.remove(fpath)
+        st.query_params.clear()
     except Exception:
         pass
-
-def restore_filters_from_cookie():
-    """Restore saved filters from cookie. Returns dict or None."""
-    try:
-        raw = cookie_manager.get("propetz_filters")
-        if raw:
-            return json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        pass
-    return None
 
 def login_page():
     st.markdown('<div class="login-box">', unsafe_allow_html=True)
@@ -249,7 +270,7 @@ def login_page():
             st.session_state["user_name"] = user["name"]
             st.session_state["role"] = user["role"]
             st.session_state["vendor_filter"] = user.get("vendor_filter")
-            save_session_cookie(username, user)
+            save_session(username, user)
             st.rerun()
         else:
             st.error("Usuário ou senha incorretos.")
@@ -1880,9 +1901,9 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
-    # Check authentication — try cookie first
+    # Check authentication — try session file first
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        if not restore_session_from_cookie():
+        if not restore_session():
             login_page()
             return
 
@@ -1969,8 +1990,8 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Restore saved filter defaults from cookie
-        saved_filters = restore_filters_from_cookie()
+        # Restore saved filter defaults from session file
+        saved_filters = st.session_state.get("_restored_filters", {})
         if saved_filters and "global_years" not in st.session_state:
             _saved_years = [y for y in saved_filters.get("years", []) if y in all_years_ordered]
             _saved_months = [m for m in saved_filters.get("months", []) if m in month_options]
@@ -1993,13 +2014,13 @@ def main():
             key="global_months"
         )
 
-        # Save current filters to cookie for persistence
-        save_filters_cookie(selected_years, selected_month_names, "")
+        # Save current filters to session file for persistence across reloads
+        save_filters(selected_years, selected_month_names)
 
         st.divider()
 
         if st.button("🚪 Sair", use_container_width=True):
-            clear_session_cookie()
+            clear_session()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()

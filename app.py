@@ -170,6 +170,46 @@ def verify_login(username, password):
     return None
 
 # ============================================================
+# SESSION PERSISTENCE (via query params — native Streamlit, no extra libs)
+# ============================================================
+def _auto_login_from_params():
+    """Try to restore session from URL query params. Returns True if restored."""
+    try:
+        u = st.query_params.get("u", "")
+        t = st.query_params.get("t", "")
+        if not u or not t:
+            return False
+        # Validate token
+        users = load_users()
+        user = users["users"].get(u)
+        if not user:
+            return False
+        expected_token = hashlib.sha256(f"{u}:{user['password']}:propetz".encode()).hexdigest()[:16]
+        if t != expected_token:
+            return False
+        st.session_state["authenticated"] = True
+        st.session_state["username"] = u
+        st.session_state["user_name"] = user["name"]
+        st.session_state["role"] = user["role"]
+        st.session_state["vendor_filter"] = user.get("vendor_filter")
+        return True
+    except Exception:
+        return False
+
+def _set_login_params(username, user):
+    """Save login to URL query params so it survives page refresh."""
+    token = hashlib.sha256(f"{username}:{user['password']}:propetz".encode()).hexdigest()[:16]
+    st.query_params["u"] = username
+    st.query_params["t"] = token
+
+def _clear_login_params():
+    """Clear login params from URL."""
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+# ============================================================
 # AUTHENTICATION
 # ============================================================
 def login_page():
@@ -188,6 +228,7 @@ def login_page():
             st.session_state["user_name"] = user["name"]
             st.session_state["role"] = user["role"]
             st.session_state["vendor_filter"] = user.get("vendor_filter")
+            _set_login_params(username, user)
             st.rerun()
         else:
             st.error("Usuário ou senha incorretos.")
@@ -413,6 +454,18 @@ def process_excel(xlsx_path):
                 })
     df_client_products = pd.DataFrame(client_products) if client_products else pd.DataFrame()
 
+    # ---- TRIM MONTHS TO ACTUAL DATA (must happen BEFORE risk calc) ----
+    last_data_idx = 0
+    for mi in range(len(month_labels)-1, -1, -1):
+        total = sum(c['monthly'][mi] for c in clients)
+        if total > 0:
+            last_data_idx = mi
+            break
+
+    month_labels = month_labels[:last_data_idx+1]
+    for c in clients:
+        c['monthly'] = c['monthly'][:last_data_idx+1]
+
     # ---- ENRICH CLIENTS ----
     year_ranges = {'2021':(0,4),'2022':(4,16),'2023':(16,28),'2024':(28,40),'2025':(40,52),'2026':(52,54)}
 
@@ -447,7 +500,7 @@ def process_excel(xlsx_path):
 
         client['total_geral'] = round(sum(client['monthly']), 2)
 
-        # Risk
+        # Risk — based on months since last purchase (using trimmed data)
         risk = recuperacao.get(cn)
         if not risk:
             for rk, rv in recuperacao.items():
@@ -473,19 +526,6 @@ def process_excel(xlsx_path):
                 break
         client['last_purchase'] = month_labels[last_idx] if last_idx >= 0 else 'Nunca'
         client['months_since'] = (len(month_labels) - 1 - last_idx) if last_idx >= 0 else 999
-
-    # Find last month with actual data
-    last_data_idx = 0
-    for mi in range(len(month_labels)-1, -1, -1):
-        total = sum(c['monthly'][mi] for c in clients)
-        if total > 0:
-            last_data_idx = mi
-            break
-
-    # Trim to actual data
-    month_labels = month_labels[:last_data_idx+1]
-    for c in clients:
-        c['monthly'] = c['monthly'][:last_data_idx+1]
 
     # Convert to DataFrame
     df_clients = pd.DataFrame(clients)
@@ -551,6 +591,19 @@ def process_excel(xlsx_path):
         
         if sku_data:
             df_sku = pd.DataFrame(sku_data)
+
+    # If no Base de DadosProdutos but we have SKU data, build client×product from SKU
+    if len(df_client_products) == 0 and len(df_sku) > 0:
+        cp_from_sku = df_sku.groupby(['cod_cliente', 'sku', 'produto']).agg(
+            total_qty=('quantidade', 'sum')
+        ).reset_index()
+        # Try to match client names from df_clients
+        id_to_name = dict(zip(df_clients['id'].astype(str).str.strip(), df_clients['name']))
+        cp_from_sku['client_id'] = cp_from_sku['cod_cliente'].astype(str).str.strip()
+        cp_from_sku['client_name'] = cp_from_sku['client_id'].map(id_to_name).fillna('')
+        cp_from_sku['product_code'] = cp_from_sku['sku']
+        cp_from_sku['product_name'] = cp_from_sku['produto']
+        df_client_products = cp_from_sku[['client_id','client_name','product_code','product_name','total_qty']].copy()
 
     return df_clients, df_products, df_client_products, month_labels, year_ranges, df_sku
 
@@ -1190,7 +1243,7 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
         
         if len(df_sku) > 0:
             # Get products this client bought
-            client_skus = df_sku[df_sku['cod_cliente'] == client_id].copy()
+            client_skus = df_sku[df_sku['cod_cliente'].astype(str).str.strip() == str(client_id).strip()].copy()
             
             if len(client_skus) > 0:
                 # Aggregate by SKU and product
@@ -1560,7 +1613,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             vendor_products = df_sku[df_sku['cod_cliente'].isin(same_vendor_clients)].copy()
             
             # Products this client already buys
-            client_sku = set(df_sku[df_sku['cod_cliente'] == client_id]['sku'].unique())
+            client_sku = set(df_sku[df_sku['cod_cliente'].astype(str).str.strip() == str(client_id).strip()]['sku'].unique())
             
             # Find products not yet bought by this client
             opp_data = []
@@ -1829,10 +1882,11 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
-    # Check authentication
+    # Check authentication — try auto-login from URL params first
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        login_page()
-        return
+        if not _auto_login_from_params():
+            login_page()
+            return
 
     # Load data
     result = load_data()
@@ -1917,10 +1971,18 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
+        # Default: most recent year that has significant data (not just 1-2 months)
+        _best_default_year = all_years_ordered[-1] if all_years_ordered else ""
+        for yr in reversed(all_years_ordered):
+            yr_months = [lbl for lbl in months if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
+            if len(yr_months) >= 6:
+                _best_default_year = yr
+                break
+
         selected_years = st.multiselect(
             "Ano",
             options=all_years_ordered,
-            default=[all_years_ordered[-1]] if all_years_ordered else [],
+            default=[_best_default_year] if _best_default_year else [],
             key="global_years"
         )
         selected_month_names = st.multiselect(
@@ -1930,9 +1992,16 @@ def main():
             key="global_months"
         )
 
+        # Show active period count
+        _n_active = sum(1 for i, lbl in enumerate(months)
+                       if lbl.replace('-','/').split('/')[0].strip().lower() in selected_month_names
+                       and (f"20{lbl.replace('-','/').split('/')[-1].strip()}" if len(lbl.replace('-','/').split('/')[-1].strip()) == 2 else lbl.replace('-','/').split('/')[-1].strip()) in selected_years)
+        st.caption(f"📅 {_n_active} meses selecionados")
+
         st.divider()
 
         if st.button("🚪 Sair", use_container_width=True):
+            _clear_login_params()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()

@@ -1284,11 +1284,13 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
         # Top products chart
         top15 = cp_enriched.head(15)
         fig_top = px.bar(top15, y='product_name', x='total_qty', orientation='h', color='abc',
-                        title="Top 15 Produtos do Cliente (quantidade)",
-                        color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'})
+                        title="Top 15 Produtos do Cliente (quantidade total comprada)",
+                        color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'},
+                        text='total_qty')
+        fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
         fig_top.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
                              yaxis=dict(autorange='reversed', title=''),
-                             xaxis=dict(title='Quantidade Total'), height=450, showlegend=True)
+                             xaxis=dict(title='Quantidade Total Comprada'), height=450, showlegend=True)
         st.plotly_chart(fig_top, use_container_width=True)
 
         # Table
@@ -1311,7 +1313,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
         # Compare client share vs market share for each product
         total_market = products_df['total_qty'].sum()
         if total_market > 0 and len(cp_enriched) > 0:
-            cp_potential = cp_enriched.merge(
+            cp_potential = cp_enriched.drop_duplicates(subset=['product_code']).merge(
                 products_df[['code','total_qty']].rename(columns={'code':'product_code','total_qty':'market_qty'}),
                 on='product_code', how='left'
             )
@@ -1322,8 +1324,8 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             # Impact = gap weighted by market relevance
             cp_potential['impact_score'] = (cp_potential['gap'] * cp_potential['market_share_pct'] / 10).round(2)
 
-            # Only show products with positive gap (client buys less than expected) and Curva A/B
-            underperforming = cp_potential[(cp_potential['gap'] > 1) & (cp_potential['abc'].isin(['A','B']))].copy()
+            # Show products with positive gap (client buys less than expected), broader filter
+            underperforming = cp_potential[(cp_potential['gap'] > 0.5)].copy()
             underperforming = underperforming.sort_values('impact_score', ascending=False)
 
             if len(underperforming) > 0:
@@ -1336,6 +1338,16 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                         return '⚪ Potencial Baixo'
                 underperforming['severidade'] = underperforming.apply(severity, axis=1)
 
+                # Calcular qtd potencial de compra mensal baseado na amostragem do mercado
+                total_client_qty = cp_potential['total_qty'].sum()
+                n_months_data = max(len(sel_indices_sorted), 1)
+                for idx_r in underperforming.index:
+                    mkt_share = underperforming.loc[idx_r, 'market_share_pct'] / 100
+                    current_qty = underperforming.loc[idx_r, 'total_qty']
+                    potencial_mensal = (total_client_qty * mkt_share) / n_months_data
+                    underperforming.loc[idx_r, 'qtd_potencial_mensal'] = round(max(potencial_mensal, current_qty / n_months_data), 1)
+                    underperforming.loc[idx_r, 'qtd_atual_mensal'] = round(current_qty / n_months_data, 1)
+
                 top_under = underperforming.head(3)
                 if len(top_under) > 0:
                     names = ', '.join(top_under['product_name'].tolist())
@@ -1343,13 +1355,10 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                         f"Os produtos com maior potencial de aumento: {names}.",
                         "Estes produtos são relevantes no mercado mas o cliente compra abaixo do esperado."), unsafe_allow_html=True)
 
-                if is_admin:
-                    disp_under = underperforming[['product_code','product_name','abc','total_qty','share_pct','market_share_pct','gap','severidade']].head(20).copy()
-                    disp_under.columns = ['Código','Produto','Curva','Qtd Cliente','% Mix Cliente','% Mercado','Gap (pp)','Potencial']
-                else:
-                    disp_under = underperforming[['product_code','product_name','abc','share_pct','market_share_pct','gap','severidade']].head(20).copy()
-                    disp_under.columns = ['Código','Produto','Curva','% Mix Cliente','% Mercado','Gap (pp)','Potencial']
-                st.dataframe(disp_under, use_container_width=True, hide_index=True)
+                disp_under = underperforming[['product_code','product_name','abc','total_qty','qtd_atual_mensal','qtd_potencial_mensal','share_pct','market_share_pct','gap','severidade']].head(30).copy()
+                disp_under.columns = ['Código','Produto','Curva','Qtd Total','Qtd Atual/Mês','Qtd Potencial/Mês','% Mix Cliente','% Mercado','Gap (pp)','Potencial']
+                st.dataframe(disp_under, use_container_width=True, hide_index=True,
+                           height=min(500, 35 * len(disp_under) + 38))
             else:
                 st.success("Mix do cliente está alinhado com o mercado! Nenhum gap significativo encontrado.")
         else:
@@ -1393,19 +1402,21 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             f"🔴 Curva C ({len(nb_c)})"
         ])
 
+        # Calcular qtd potencial mensal baseado no % de mercado do produto * volume médio do cliente
+        _client_monthly_avg = total / max(months_active, 1) if months_active > 0 else 0
+
         def show_never_bought(df_nb, tab):
             with tab:
                 if len(df_nb) == 0:
                     st.success("Cliente já compra todos os produtos desta curva!")
                     return
-                if is_admin:
-                    disp = df_nb[['code','name','category','total_qty']].copy()
-                    disp.columns = ['Código','Produto','Categoria','Demanda Total (mercado)']
-                else:
-                    disp = df_nb[['code','name','category','total_qty']].copy()
-                    disp['pct'] = (disp['total_qty'] / total_qty_all * 100).round(2)
-                    disp = disp.drop(columns=['total_qty'])
-                    disp.columns = ['Código','Produto','Categoria','% Demanda (mercado)']
+                disp = df_nb[['code','name','category','total_qty']].copy()
+                # Calcular potencial mensal: % mercado do produto * volume total do mercado / 14 meses
+                disp['Qtd Potencial/Mês'] = (disp['total_qty'] / max(total_qty_all, 1) * disp['total_qty'] / 14).round(1)
+                # Usar média dos compradores deste produto como referência
+                disp['% Mercado'] = (disp['total_qty'] / max(total_qty_all, 1) * 100).round(2)
+                disp = disp.drop(columns=['total_qty'])
+                disp.columns = ['Código','Produto','Categoria','Qtd Potencial/Mês','% Mercado']
                 st.dataframe(disp, use_container_width=True, hide_index=True, height=min(400, 35 * len(disp) + 38))
 
         show_never_bought(nb_a, tab_a)

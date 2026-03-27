@@ -1971,7 +1971,7 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Default: most recent year that has significant data (not just 1-2 months)
+        # Default year: most recent with 6+ months of data
         _best_default_year = all_years_ordered[-1] if all_years_ordered else ""
         for yr in reversed(all_years_ordered):
             yr_months = [lbl for lbl in months if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
@@ -1979,45 +1979,18 @@ def main():
                 _best_default_year = yr
                 break
 
-        # Restore filters from URL query params (survives F5 refresh)
-        _saved_years_param = st.query_params.get("y", "")
-        _saved_months_param = st.query_params.get("m", "")
-        if _saved_years_param and "global_years" not in st.session_state:
-            _restored_years = [y for y in _saved_years_param.split(",") if y in all_years_ordered]
-            _default_years = _restored_years if _restored_years else [_best_default_year] if _best_default_year else []
-        else:
-            _default_years = [_best_default_year] if _best_default_year else []
-        if _saved_months_param and "global_months" not in st.session_state:
-            _restored_months = [m for m in _saved_months_param.split(",") if m in month_options]
-            _default_months = _restored_months if _restored_months else month_options
-        else:
-            _default_months = month_options
-
         selected_years = st.multiselect(
             "Ano",
             options=all_years_ordered,
-            default=_default_years,
+            default=[_best_default_year] if _best_default_year else [],
             key="global_years"
         )
         selected_month_names = st.multiselect(
             "Mês",
             options=month_options,
-            default=_default_months,
+            default=month_options,
             key="global_months"
         )
-
-        # Save current filter selection to URL query params (only when changed, to avoid rerun loop)
-        _new_y = ",".join(selected_years)
-        _new_m = ",".join(selected_month_names)
-        if st.query_params.get("y", "") != _new_y or st.query_params.get("m", "") != _new_m:
-            st.query_params["y"] = _new_y
-            st.query_params["m"] = _new_m
-
-        # Show active period count
-        _n_active = sum(1 for i, lbl in enumerate(months)
-                       if lbl.replace('-','/').split('/')[0].strip().lower() in selected_month_names
-                       and (f"20{lbl.replace('-','/').split('/')[-1].strip()}" if len(lbl.replace('-','/').split('/')[-1].strip()) == 2 else lbl.replace('-','/').split('/')[-1].strip()) in selected_years)
-        st.caption(f"📅 {_n_active} meses selecionados")
 
         st.divider()
 

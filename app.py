@@ -2006,11 +2006,12 @@ def main():
             key="global_months"
         )
 
-        # Save current filter selection to URL query params (persists on F5)
-        _current_params = dict(st.query_params)
-        _current_params["y"] = ",".join(selected_years)
-        _current_params["m"] = ",".join(selected_month_names)
-        st.query_params.update(_current_params)
+        # Save current filter selection to URL query params (only when changed, to avoid rerun loop)
+        _new_y = ",".join(selected_years)
+        _new_m = ",".join(selected_month_names)
+        if st.query_params.get("y", "") != _new_y or st.query_params.get("m", "") != _new_m:
+            st.query_params["y"] = _new_y
+            st.query_params["m"] = _new_m
 
         # Show active period count
         _n_active = sum(1 for i, lbl in enumerate(months)

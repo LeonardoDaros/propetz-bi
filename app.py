@@ -8,6 +8,16 @@ import os
 import hashlib
 import json
 from datetime import datetime
+import extra_streamlit_components as stx
+
+# ============================================================
+# COOKIE MANAGER (persist login & filters across page reloads)
+# ============================================================
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager(key="propetz_cookies")
+
+cookie_manager = get_cookie_manager()
 
 # ============================================================
 # CONFIG
@@ -172,6 +182,57 @@ def verify_login(username, password):
 # ============================================================
 # AUTHENTICATION
 # ============================================================
+def save_session_cookie(username, user):
+    """Save login session to cookie so it survives page reloads."""
+    session_data = json.dumps({
+        "username": username,
+        "user_name": user["name"],
+        "role": user["role"],
+        "vendor_filter": user.get("vendor_filter", ""),
+    })
+    cookie_manager.set("propetz_session", session_data, key="set_session_cookie")
+
+def restore_session_from_cookie():
+    """Try to restore login session from cookie. Returns True if restored."""
+    try:
+        raw = cookie_manager.get("propetz_session")
+        if raw:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            # Verify user still exists
+            users = load_users()
+            if data["username"] in users["users"]:
+                st.session_state["authenticated"] = True
+                st.session_state["username"] = data["username"]
+                st.session_state["user_name"] = data["user_name"]
+                st.session_state["role"] = data["role"]
+                st.session_state["vendor_filter"] = data.get("vendor_filter") or None
+                return True
+    except Exception:
+        pass
+    return False
+
+def clear_session_cookie():
+    """Remove session cookie on logout."""
+    cookie_manager.delete("propetz_session", key="del_session_cookie")
+
+def save_filters_cookie(years, month_names, page_key):
+    """Save selected filters to cookie."""
+    try:
+        data = json.dumps({"years": years, "months": month_names, "page": page_key})
+        cookie_manager.set("propetz_filters", data, key="set_filters_cookie")
+    except Exception:
+        pass
+
+def restore_filters_from_cookie():
+    """Restore saved filters from cookie. Returns dict or None."""
+    try:
+        raw = cookie_manager.get("propetz_filters")
+        if raw:
+            return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        pass
+    return None
+
 def login_page():
     st.markdown('<div class="login-box">', unsafe_allow_html=True)
     st.markdown('<div class="login-title">Propetz BI</div>', unsafe_allow_html=True)
@@ -188,6 +249,7 @@ def login_page():
             st.session_state["user_name"] = user["name"]
             st.session_state["role"] = user["role"]
             st.session_state["vendor_filter"] = user.get("vendor_filter")
+            save_session_cookie(username, user)
             st.rerun()
         else:
             st.error("Usuário ou senha incorretos.")
@@ -1818,10 +1880,11 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
-    # Check authentication
+    # Check authentication — try cookie first
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        login_page()
-        return
+        if not restore_session_from_cookie():
+            login_page()
+            return
 
     # Load data
     result = load_data()
@@ -1906,22 +1969,37 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
+        # Restore saved filter defaults from cookie
+        saved_filters = restore_filters_from_cookie()
+        if saved_filters and "global_years" not in st.session_state:
+            _saved_years = [y for y in saved_filters.get("years", []) if y in all_years_ordered]
+            _saved_months = [m for m in saved_filters.get("months", []) if m in month_options]
+            default_years = _saved_years if _saved_years else ([all_years_ordered[-1]] if all_years_ordered else [])
+            default_months = _saved_months if _saved_months else month_options
+        else:
+            default_years = [all_years_ordered[-1]] if all_years_ordered else []
+            default_months = month_options
+
         selected_years = st.multiselect(
             "Ano",
             options=all_years_ordered,
-            default=[all_years_ordered[-1]] if all_years_ordered else [],
+            default=default_years,
             key="global_years"
         )
         selected_month_names = st.multiselect(
             "Mês",
             options=month_options,
-            default=month_options,
+            default=default_months,
             key="global_months"
         )
+
+        # Save current filters to cookie for persistence
+        save_filters_cookie(selected_years, selected_month_names, "")
 
         st.divider()
 
         if st.button("🚪 Sair", use_container_width=True):
+            clear_session_cookie()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()

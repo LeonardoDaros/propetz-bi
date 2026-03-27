@@ -7,7 +7,6 @@ import yaml
 import os
 import hashlib
 import json
-import uuid
 from datetime import datetime
 
 # ============================================================
@@ -173,87 +172,6 @@ def verify_login(username, password):
 # ============================================================
 # AUTHENTICATION
 # ============================================================
-# ============================================================
-# SESSION PERSISTENCE (survives page refresh via query params + file)
-# ============================================================
-SESSIONS_DIR = os.path.join(os.path.dirname(__file__), ".sessions")
-os.makedirs(SESSIONS_DIR, exist_ok=True)
-
-def _session_file(token):
-    return os.path.join(SESSIONS_DIR, f"{token}.json")
-
-def save_session(username, user):
-    """Save login session to file and put token in URL query params."""
-    token = hashlib.sha256(f"{username}_{uuid.uuid4()}".encode()).hexdigest()[:24]
-    data = {
-        "username": username,
-        "user_name": user["name"],
-        "role": user["role"],
-        "vendor_filter": user.get("vendor_filter", ""),
-        "filters": {},
-    }
-    with open(_session_file(token), 'w') as f:
-        json.dump(data, f)
-    st.query_params["s"] = token
-
-def restore_session():
-    """Try to restore login session from query params token. Returns True if restored."""
-    try:
-        token = st.query_params.get("s")
-        if not token:
-            return False
-        fpath = _session_file(token)
-        if not os.path.exists(fpath):
-            return False
-        with open(fpath, 'r') as f:
-            data = json.load(f)
-        # Verify user still exists
-        users = load_users()
-        if data["username"] not in users["users"]:
-            return False
-        st.session_state["authenticated"] = True
-        st.session_state["username"] = data["username"]
-        st.session_state["user_name"] = data["user_name"]
-        st.session_state["role"] = data["role"]
-        st.session_state["vendor_filter"] = data.get("vendor_filter") or None
-        st.session_state["_session_token"] = token
-        # Restore saved filters
-        saved = data.get("filters", {})
-        if saved:
-            st.session_state["_restored_filters"] = saved
-        return True
-    except Exception:
-        return False
-
-def save_filters(years, month_names):
-    """Save selected filters to session file."""
-    try:
-        token = st.session_state.get("_session_token") or st.query_params.get("s")
-        if not token:
-            return
-        fpath = _session_file(token)
-        if not os.path.exists(fpath):
-            return
-        with open(fpath, 'r') as f:
-            data = json.load(f)
-        data["filters"] = {"years": years, "months": month_names}
-        with open(fpath, 'w') as f:
-            json.dump(data, f)
-    except Exception:
-        pass
-
-def clear_session():
-    """Remove session file and query param on logout."""
-    try:
-        token = st.session_state.get("_session_token") or st.query_params.get("s")
-        if token:
-            fpath = _session_file(token)
-            if os.path.exists(fpath):
-                os.remove(fpath)
-        st.query_params.clear()
-    except Exception:
-        pass
-
 def login_page():
     st.markdown('<div class="login-box">', unsafe_allow_html=True)
     st.markdown('<div class="login-title">Propetz BI</div>', unsafe_allow_html=True)
@@ -270,7 +188,6 @@ def login_page():
             st.session_state["user_name"] = user["name"]
             st.session_state["role"] = user["role"]
             st.session_state["vendor_filter"] = user.get("vendor_filter")
-            save_session(username, user)
             st.rerun()
         else:
             st.error("Usuário ou senha incorretos.")
@@ -1901,11 +1818,10 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
-    # Check authentication — try session file first
+    # Check authentication
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        if not restore_session():
-            login_page()
-            return
+        login_page()
+        return
 
     # Load data
     result = load_data()
@@ -1990,37 +1906,22 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Restore saved filter defaults from session file
-        saved_filters = st.session_state.get("_restored_filters", {})
-        if saved_filters and "global_years" not in st.session_state:
-            _saved_years = [y for y in saved_filters.get("years", []) if y in all_years_ordered]
-            _saved_months = [m for m in saved_filters.get("months", []) if m in month_options]
-            default_years = _saved_years if _saved_years else ([all_years_ordered[-1]] if all_years_ordered else [])
-            default_months = _saved_months if _saved_months else month_options
-        else:
-            default_years = [all_years_ordered[-1]] if all_years_ordered else []
-            default_months = month_options
-
         selected_years = st.multiselect(
             "Ano",
             options=all_years_ordered,
-            default=default_years,
+            default=[all_years_ordered[-1]] if all_years_ordered else [],
             key="global_years"
         )
         selected_month_names = st.multiselect(
             "Mês",
             options=month_options,
-            default=default_months,
+            default=month_options,
             key="global_months"
         )
-
-        # Save current filters to session file for persistence across reloads
-        save_filters(selected_years, selected_month_names)
 
         st.divider()
 
         if st.button("🚪 Sair", use_container_width=True):
-            clear_session()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()

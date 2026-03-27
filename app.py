@@ -1127,6 +1127,7 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
 
     if selected:
         c = df[df['name'] == selected].iloc[0]
+        client_id = str(c['id']).strip()
         monthly = c['monthly']
         period_total = _period_sum(monthly)
         total = sum(monthly)

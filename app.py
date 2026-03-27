@@ -201,14 +201,28 @@ def login_page():
 def load_data():
     """Load and process data from the Excel file."""
     # Try to find the Excel file
-    possible_paths = [
-        os.path.join(os.path.dirname(__file__), "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx"),
-        os.path.join(os.path.dirname(__file__), "..", "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx"),
+    # Search for any .xlsx file in the app directory
+    app_dir = os.path.dirname(__file__)
+    possible_names = [
+        "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx",
+        "Relatorio Distribuidores Mensal.xlsx",
     ]
+    possible_paths = []
+    for name in possible_names:
+        possible_paths.append(os.path.join(app_dir, name))
+        possible_paths.append(os.path.join(app_dir, "..", name))
+
+    # Also search for any xlsx in app_dir
+    try:
+        for f in os.listdir(app_dir):
+            if f.endswith('.xlsx') and not f.startswith('~'):
+                possible_paths.append(os.path.join(app_dir, f))
+    except:
+        pass
 
     xlsx_path = None
     for p in possible_paths:
-        if os.path.exists(p):
+        if os.path.exists(p) and os.path.getsize(p) > 0:
             xlsx_path = p
             break
 
@@ -474,14 +488,23 @@ def process_excel(xlsx_path):
     df_clients = pd.DataFrame(clients)
     df_products = pd.DataFrame(products)
 
-    # ---- SKU QUANTITY DATA (Qtd. Comprada Por Cliente sheet with trailing space) ----
+    # ---- SKU QUANTITY DATA ----
     df_sku = pd.DataFrame()
-    if 'Qtd. Comprada Por Cliente ' in wb.sheetnames:
-        ws_sku = wb['Qtd. Comprada Por Cliente ']
+    sku_sheet_name = None
+    for sn in wb.sheetnames:
+        if 'qtd' in sn.lower() and 'cliente' in sn.lower():
+            sku_sheet_name = sn
+            break
+    if sku_sheet_name:
+        ws_sku = wb[sku_sheet_name]
         sku_data = []
-        
-        # Month columns: 2, 9, 17, 25, 33, 41, 49, 56, 63, 70, 77, 84, 91, 98 (0-indexed: 1, 8, 16, 24, 32, 40, 48, 55, 62, 69, 76, 83, 90, 97)
-        month_cols = [2, 9, 17, 25, 33, 41, 49, 56, 63, 70, 77, 84, 91, 98]
+
+        # Auto-detect month column positions from row 1
+        month_cols = []
+        for c in range(1, ws_sku.max_column + 1):
+            v = ws_sku.cell(1, c).value
+            if v and '/' in str(v):
+                month_cols.append(c)
         month_headers = []
         for col in month_cols:
             h = ws_sku.cell(1, col).value

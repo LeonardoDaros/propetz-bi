@@ -1649,63 +1649,9 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     st.divider()
 
     # ============================================================
-    # NOVA SEÇÃO: TOP 20 PRODUTOS POR QUANTIDADE (usando df_sku)
+    # SEÇÃO: PRODUTOS ABAIXO DO POTENCIAL (Gap Analysis)
     # ============================================================
     if len(df_sku) > 0:
-        st.subheader("📊 Top 20 Produtos por Quantidade")
-        st.caption("Produtos mais comprados em quantidade geral (todos os clientes)")
-
-        # Aggregate by SKU and product
-        sku_qty = df_sku.groupby(['sku', 'produto']).agg({
-            'quantidade': 'sum'
-        }).reset_index()
-        sku_qty = sku_qty.sort_values('quantidade', ascending=False).head(20)
-
-        if len(sku_qty) > 0:
-            # Create label with SKU + product name
-            sku_qty['label'] = sku_qty['sku'] + ' - ' + sku_qty['produto']
-
-            _is_admin_mix = has_full_data_access()
-
-            fig_top20 = px.bar(
-                sku_qty,
-                y='label',
-                x='quantidade',
-                orientation='h',
-                title="Top 20 Produtos por Quantidade",
-                color='quantidade',
-                color_continuous_scale='Blues'
-            )
-            # Vendedores: sem texto de quantidade no gráfico e sem eixo X
-            if not _is_admin_mix:
-                fig_top20.update_traces(text=None, textposition=None)
-                fig_top20.update_layout(
-                    xaxis=dict(title='', showticklabels=False),
-                    coloraxis_showscale=False
-                )
-            else:
-                fig_top20.update_layout(xaxis=dict(title='Quantidade Total'))
-            fig_top20.update_layout(
-                template='plotly_white',
-                paper_bgcolor='#ffffff',
-                plot_bgcolor='#ffffff',
-                yaxis=dict(autorange='reversed', title=''),
-                height=500,
-                showlegend=False
-            )
-            st.plotly_chart(fig_top20, use_container_width=True)
-
-            # Table view — only for admin
-            if _is_admin_mix:
-                disp_top20 = sku_qty[['sku', 'produto', 'quantidade']].copy()
-                disp_top20.columns = ['SKU', 'Produto', 'Quantidade Total']
-                st.dataframe(disp_top20, use_container_width=True, hide_index=True)
-        
-        st.divider()
-
-        # ============================================================
-        # NOVA SEÇÃO: PRODUTOS ABAIXO DO POTENCIAL (Gap Analysis)
-        # ============================================================
         st.subheader("📉 Produtos Abaixo do Potencial - Análise de Gap")
         st.caption("Produtos com >=5 clientes compradores: identifica oportunidades com base na diferença entre média de top 25% buyers vs média geral")
         

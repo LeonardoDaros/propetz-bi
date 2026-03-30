@@ -1927,43 +1927,30 @@ def main():
 
     # ========== COMPACT SIDEBAR ==========
 
-    # --- Process shortcut requests BEFORE rendering widgets ---
-    _sc = st.session_state.pop("_period_shortcut", None)
-    if _sc == "1m":
-        st.session_state["_pf_start"] = months[-1]
-        st.session_state["_pf_end"] = months[-1]
-    elif _sc == "3m":
-        st.session_state["_pf_start"] = months[max(0, len(months) - 3)]
-        st.session_state["_pf_end"] = months[-1]
-    elif _sc == "6m":
-        st.session_state["_pf_start"] = months[max(0, len(months) - 6)]
-        st.session_state["_pf_end"] = months[-1]
-    elif _sc == "12m":
-        st.session_state["_pf_start"] = months[max(0, len(months) - 12)]
-        st.session_state["_pf_end"] = months[-1]
-    elif _sc == "ytd":
-        _current_yr = all_years_ordered[-1] if all_years_ordered else ""
-        _ytd_idx = len(months) - 1
-        for i, lbl in enumerate(months):
-            y_raw = lbl.split('/')[-1].strip()
-            y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
-            if y_full == _current_yr:
-                _ytd_idx = i
-                break
-        st.session_state["_pf_start"] = months[_ytd_idx]
-        st.session_state["_pf_end"] = months[-1]
+    # --- Map month names to numbers (jan=1, fev=2, ...) ---
+    MONTH_NAME_TO_NUM = {'jan':'1','fev':'2','mar':'3','abr':'4','mai':'5','jun':'6',
+                         'jul':'7','ago':'8','set':'9','out':'10','nov':'11','dez':'12'}
+    # Build unique month numbers that exist in data
+    _existing_month_nums = []
+    _seen_mnums = set()
+    for lbl in months:
+        parts = lbl.replace('-', '/').split('/')
+        if len(parts) >= 2:
+            m_name = parts[0].strip().lower()
+            m_num = MONTH_NAME_TO_NUM.get(m_name, m_name)
+            if m_num not in _seen_mnums:
+                _existing_month_nums.append(m_num)
+                _seen_mnums.add(m_num)
+    # Sort numerically
+    _existing_month_nums.sort(key=lambda x: int(x) if x.isdigit() else 0)
 
-    # Set default period if not yet set
-    if "_pf_start" not in st.session_state:
-        # Default: most recent year with 6+ months of data
-        _best_start_idx = 0
-        for yr in reversed(all_years_ordered):
-            yr_indices = [i for i, lbl in enumerate(months) if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
-            if len(yr_indices) >= 6:
-                _best_start_idx = yr_indices[0]
-                break
-        st.session_state["_pf_start"] = months[_best_start_idx]
-        st.session_state["_pf_end"] = months[-1]
+    # Default year: most recent with 6+ months of data
+    _best_default_year = all_years_ordered[-1] if all_years_ordered else ""
+    for yr in reversed(all_years_ordered):
+        yr_months = [lbl for lbl in months if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
+        if len(yr_months) >= 6:
+            _best_default_year = yr
+            break
 
     with st.sidebar:
         # --- User greeting (compact) ---
@@ -1994,7 +1981,7 @@ def main():
 
         st.markdown("---")
 
-        # --- Period Filter ---
+        # --- Period Filter: compact multiselects ---
         st.markdown("**📅 Período**")
 
         # Chart click override indicator
@@ -2006,57 +1993,53 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Two selectboxes: De / Até (clear, intuitive)
-        _pf_col1, _pf_col2 = st.columns(2)
-        with _pf_col1:
-            _cur_start = st.session_state["_pf_start"]
-            _start_idx = months.index(_cur_start) if _cur_start in months else 0
-            _sel_start = st.selectbox("De", options=months, index=_start_idx, key="sb_period_start")
-        with _pf_col2:
-            _cur_end = st.session_state["_pf_end"]
-            _end_idx = months.index(_cur_end) if _cur_end in months else len(months) - 1
-            _sel_end = st.selectbox("Até", options=months, index=_end_idx, key="sb_period_end")
+        # Year pills (compact multiselect)
+        selected_years = st.multiselect(
+            "Ano",
+            options=all_years_ordered,
+            default=[_best_default_year] if _best_default_year else [],
+            key="global_years"
+        )
 
-        # Update state from selectboxes
-        st.session_state["_pf_start"] = _sel_start
-        st.session_state["_pf_end"] = _sel_end
+        # Month pills as numbers 1-12 (compact multiselect)
+        selected_month_nums = st.multiselect(
+            "Mês",
+            options=_existing_month_nums,
+            default=_existing_month_nums,
+            key="global_months"
+        )
 
-        # Ensure start <= end
-        _slider_start_idx = months.index(_sel_start) if _sel_start in months else 0
-        _slider_end_idx = months.index(_sel_end) if _sel_end in months else len(months) - 1
-        if _slider_start_idx > _slider_end_idx:
-            _slider_start_idx, _slider_end_idx = _slider_end_idx, _slider_start_idx
-
-        # Quick shortcut buttons
-        _sc_cols = st.columns(5)
-        with _sc_cols[0]:
-            if st.button("1M", use_container_width=True, key="sc_1m"):
-                st.session_state["_period_shortcut"] = "1m"
-                st.rerun()
-        with _sc_cols[1]:
-            if st.button("3M", use_container_width=True, key="sc_3m"):
-                st.session_state["_period_shortcut"] = "3m"
-                st.rerun()
-        with _sc_cols[2]:
-            if st.button("6M", use_container_width=True, key="sc_6m"):
-                st.session_state["_period_shortcut"] = "6m"
-                st.rerun()
-        with _sc_cols[3]:
-            if st.button("12M", use_container_width=True, key="sc_12m"):
-                st.session_state["_period_shortcut"] = "12m"
-                st.rerun()
-        with _sc_cols[4]:
-            if st.button("YTD", use_container_width=True, key="sc_ytd"):
-                st.session_state["_period_shortcut"] = "ytd"
-                st.rerun()
-
-        # Show selected range badge
-        _n_months_sel = _slider_end_idx - _slider_start_idx + 1
-        st.markdown(f"""
-        <div style="background:rgba(255,107,53,0.1);border-radius:8px;padding:6px 10px;margin-top:4px;text-align:center">
-            <span style="font-size:13px;font-weight:600;color:#FF6B35">{months[_slider_start_idx]} → {months[_slider_end_idx]}</span>
-            <span style="font-size:11px;opacity:.6;margin-left:6px">({_n_months_sel} {'mês' if _n_months_sel == 1 else 'meses'})</span>
-        </div>
+        # --- Compact CSS to reduce multiselect pill size ---
+        st.markdown("""
+        <style>
+        /* Smaller multiselect pills */
+        section[data-testid="stSidebar"] span[data-baseweb="tag"] {
+            font-size: 12px !important;
+            padding: 2px 6px !important;
+            margin: 1px !important;
+            height: auto !important;
+            line-height: 1.3 !important;
+        }
+        section[data-testid="stSidebar"] span[data-baseweb="tag"] span {
+            font-size: 12px !important;
+        }
+        /* Smaller multiselect input */
+        section[data-testid="stSidebar"] [data-baseweb="select"] {
+            font-size: 13px !important;
+        }
+        section[data-testid="stSidebar"] .stMultiSelect > label {
+            font-size: 13px !important;
+            margin-bottom: 2px !important;
+        }
+        /* Compact radio buttons */
+        section[data-testid="stSidebar"] .stRadio > div {
+            gap: 0px !important;
+        }
+        section[data-testid="stSidebar"] .stRadio > div > label {
+            padding: 4px 0 !important;
+            font-size: 14px !important;
+        }
+        </style>
         """, unsafe_allow_html=True)
 
         st.markdown("---")
@@ -2107,8 +2090,25 @@ def main():
             if lbl in months:
                 sel_indices.add(months.index(lbl))
     else:
-        # Use period range (continuous from start to end)
-        sel_indices = set(range(_slider_start_idx, _slider_end_idx + 1))
+        # Match months by year + month number
+        _num_to_names = {}
+        for k, v in MONTH_NAME_TO_NUM.items():
+            _num_to_names.setdefault(v, []).append(k)
+
+        sel_indices = set()
+        for i, lbl in enumerate(months):
+            parts = lbl.replace('-', '/').split('/')
+            if len(parts) >= 2:
+                m_name = parts[0].strip().lower()
+                y_raw = parts[-1].strip()
+                y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
+                m_num = MONTH_NAME_TO_NUM.get(m_name, "")
+            else:
+                m_name = lbl.lower()
+                y_full = ""
+                m_num = ""
+            if y_full in selected_years and m_num in selected_month_nums:
+                sel_indices.add(i)
 
     # Fallback: if nothing selected, select all
     if not sel_indices:

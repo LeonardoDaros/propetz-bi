@@ -1926,6 +1926,45 @@ def main():
             _seen_years.add(y_full)
 
     # ========== COMPACT SIDEBAR ==========
+
+    # --- Process shortcut requests BEFORE rendering widgets ---
+    _sc = st.session_state.pop("_period_shortcut", None)
+    if _sc == "1m":
+        st.session_state["_pf_start"] = months[-1]
+        st.session_state["_pf_end"] = months[-1]
+    elif _sc == "3m":
+        st.session_state["_pf_start"] = months[max(0, len(months) - 3)]
+        st.session_state["_pf_end"] = months[-1]
+    elif _sc == "6m":
+        st.session_state["_pf_start"] = months[max(0, len(months) - 6)]
+        st.session_state["_pf_end"] = months[-1]
+    elif _sc == "12m":
+        st.session_state["_pf_start"] = months[max(0, len(months) - 12)]
+        st.session_state["_pf_end"] = months[-1]
+    elif _sc == "ytd":
+        _current_yr = all_years_ordered[-1] if all_years_ordered else ""
+        _ytd_idx = len(months) - 1
+        for i, lbl in enumerate(months):
+            y_raw = lbl.split('/')[-1].strip()
+            y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
+            if y_full == _current_yr:
+                _ytd_idx = i
+                break
+        st.session_state["_pf_start"] = months[_ytd_idx]
+        st.session_state["_pf_end"] = months[-1]
+
+    # Set default period if not yet set
+    if "_pf_start" not in st.session_state:
+        # Default: most recent year with 6+ months of data
+        _best_start_idx = 0
+        for yr in reversed(all_years_ordered):
+            yr_indices = [i for i, lbl in enumerate(months) if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
+            if len(yr_indices) >= 6:
+                _best_start_idx = yr_indices[0]
+                break
+        st.session_state["_pf_start"] = months[_best_start_idx]
+        st.session_state["_pf_end"] = months[-1]
+
     with st.sidebar:
         # --- User greeting (compact) ---
         _role_icon = "🔑" if st.session_state['role'] == 'admin' else "👤"
@@ -1940,7 +1979,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # --- Navigation with compact icon buttons ---
+        # --- Navigation ---
         pages = {
             "📊 Visão Geral": "overview",
             "👤 Clientes": "clients",
@@ -1955,91 +1994,70 @@ def main():
 
         st.markdown("---")
 
-        # --- Period Filter with Slider ---
-        st.markdown("""
-        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;opacity:.5;margin-bottom:4px">
-        📅 Período</div>""", unsafe_allow_html=True)
+        # --- Period Filter ---
+        st.markdown("**📅 Período**")
 
         # Chart click override indicator
         chart_override_active = "chart_sel_months" in st.session_state and st.session_state["chart_sel_months"]
         if chart_override_active:
             n_chart = len(st.session_state["chart_sel_months"])
             st.info(f"📊 Seleção via gráfico ({n_chart} {'mês' if n_chart == 1 else 'meses'})")
-            if st.button("✕ Limpar", use_container_width=True, key="clear_chart"):
+            if st.button("✕ Limpar seleção", use_container_width=True, key="clear_chart"):
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Build slider from month labels
-        if len(months) >= 2:
-            # Find best default range: most recent year with 6+ months
-            _best_start_idx = 0
-            for yr in reversed(all_years_ordered):
-                yr_indices = [i for i, lbl in enumerate(months) if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
-                if len(yr_indices) >= 6:
-                    _best_start_idx = yr_indices[0]
-                    break
+        # Two selectboxes: De / Até (clear, intuitive)
+        _pf_col1, _pf_col2 = st.columns(2)
+        with _pf_col1:
+            _cur_start = st.session_state["_pf_start"]
+            _start_idx = months.index(_cur_start) if _cur_start in months else 0
+            _sel_start = st.selectbox("De", options=months, index=_start_idx, key="sb_period_start")
+        with _pf_col2:
+            _cur_end = st.session_state["_pf_end"]
+            _end_idx = months.index(_cur_end) if _cur_end in months else len(months) - 1
+            _sel_end = st.selectbox("Até", options=months, index=_end_idx, key="sb_period_end")
 
-            _default_start = months[_best_start_idx]
-            _default_end = months[-1]
+        # Update state from selectboxes
+        st.session_state["_pf_start"] = _sel_start
+        st.session_state["_pf_end"] = _sel_end
 
-            slider_range = st.select_slider(
-                "Período",
-                options=months,
-                value=(_default_start, _default_end),
-                label_visibility="collapsed",
-                key="period_slider"
-            )
-            _slider_start_idx = months.index(slider_range[0])
-            _slider_end_idx = months.index(slider_range[1])
+        # Ensure start <= end
+        _slider_start_idx = months.index(_sel_start) if _sel_start in months else 0
+        _slider_end_idx = months.index(_sel_end) if _sel_end in months else len(months) - 1
+        if _slider_start_idx > _slider_end_idx:
+            _slider_start_idx, _slider_end_idx = _slider_end_idx, _slider_start_idx
 
-            # Quick shortcuts
-            st.markdown('<div style="font-size:11px;opacity:.5;margin-bottom:2px">Atalhos:</div>', unsafe_allow_html=True)
-            _shortcut_cols = st.columns(4)
-            with _shortcut_cols[0]:
-                _btn_1m = st.button("1M", use_container_width=True, key="sc_1m")
-            with _shortcut_cols[1]:
-                _btn_3m = st.button("3M", use_container_width=True, key="sc_3m")
-            with _shortcut_cols[2]:
-                _btn_6m = st.button("6M", use_container_width=True, key="sc_6m")
-            with _shortcut_cols[3]:
-                _btn_ytd = st.button("YTD", use_container_width=True, key="sc_ytd")
-
-            # Handle shortcut clicks
-            if _btn_1m:
-                st.session_state["period_slider"] = (months[-1], months[-1])
+        # Quick shortcut buttons
+        _sc_cols = st.columns(5)
+        with _sc_cols[0]:
+            if st.button("1M", use_container_width=True, key="sc_1m"):
+                st.session_state["_period_shortcut"] = "1m"
                 st.rerun()
-            elif _btn_3m:
-                _start = max(0, len(months) - 3)
-                st.session_state["period_slider"] = (months[_start], months[-1])
+        with _sc_cols[1]:
+            if st.button("3M", use_container_width=True, key="sc_3m"):
+                st.session_state["_period_shortcut"] = "3m"
                 st.rerun()
-            elif _btn_6m:
-                _start = max(0, len(months) - 6)
-                st.session_state["period_slider"] = (months[_start], months[-1])
+        with _sc_cols[2]:
+            if st.button("6M", use_container_width=True, key="sc_6m"):
+                st.session_state["_period_shortcut"] = "6m"
                 st.rerun()
-            elif _btn_ytd:
-                # Find first month of current year (last year in data)
-                _current_yr = all_years_ordered[-1] if all_years_ordered else ""
-                _ytd_start = len(months) - 1
-                for i, lbl in enumerate(months):
-                    y_raw = lbl.split('/')[-1].strip()
-                    y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
-                    if y_full == _current_yr:
-                        _ytd_start = i
-                        break
-                st.session_state["period_slider"] = (months[_ytd_start], months[-1])
+        with _sc_cols[3]:
+            if st.button("12M", use_container_width=True, key="sc_12m"):
+                st.session_state["_period_shortcut"] = "12m"
+                st.rerun()
+        with _sc_cols[4]:
+            if st.button("YTD", use_container_width=True, key="sc_ytd"):
+                st.session_state["_period_shortcut"] = "ytd"
                 st.rerun()
 
-            # Show selected range summary
-            _n_months_sel = _slider_end_idx - _slider_start_idx + 1
-            st.markdown(f"""
-            <div style="background:rgba(255,107,53,0.1);border-radius:8px;padding:8px 10px;margin-top:6px">
-                <div style="font-size:12px;font-weight:600;color:#FF6B35">{slider_range[0]} → {slider_range[1]}</div>
-                <div style="font-size:11px;opacity:.6">{_n_months_sel} {'mês' if _n_months_sel == 1 else 'meses'} selecionado{'s' if _n_months_sel > 1 else ''}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            _slider_start_idx = 0
-            _slider_end_idx = len(months) - 1
+        # Show selected range badge
+        _n_months_sel = _slider_end_idx - _slider_start_idx + 1
+        st.markdown(f"""
+        <div style="background:rgba(255,107,53,0.1);border-radius:8px;padding:6px 10px;margin-top:4px;text-align:center">
+            <span style="font-size:13px;font-weight:600;color:#FF6B35">{months[_slider_start_idx]} → {months[_slider_end_idx]}</span>
+            <span style="font-size:11px;opacity:.6;margin-left:6px">({_n_months_sel} {'mês' if _n_months_sel == 1 else 'meses'})</span>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("---")
 
@@ -2051,7 +2069,6 @@ def main():
         _recovery = _risk_counts.get('Recuperação', 0)
 
         st.markdown(f"""
-        <div style="font-size:11px;opacity:.5;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Resumo</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
             <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
                 <div style="font-size:18px;font-weight:800;color:#FF6B35">{_total_clients}</div>
@@ -2090,7 +2107,7 @@ def main():
             if lbl in months:
                 sel_indices.add(months.index(lbl))
     else:
-        # Use slider range (continuous range from start to end)
+        # Use period range (continuous from start to end)
         sel_indices = set(range(_slider_start_idx, _slider_end_idx + 1))
 
     # Fallback: if nothing selected, select all

@@ -167,6 +167,27 @@ def verify_login(username, password):
     user = users["users"].get(username)
     if user and user["password"] == hash_password(password):
         return user
+
+# ============================================================
+# INACTIVE CLIENTS DATABASE (stored in JSON - persists across sessions)
+# ============================================================
+INACTIVE_FILE = os.path.join(os.path.dirname(__file__), "inactive_clients.json")
+
+def load_inactive_clients():
+    """Load set of inactive client IDs from JSON file."""
+    if os.path.exists(INACTIVE_FILE):
+        try:
+            with open(INACTIVE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return set(data.get("inactive_ids", []))
+        except Exception:
+            return set()
+    return set()
+
+def save_inactive_clients(inactive_set):
+    """Save set of inactive client IDs to JSON file."""
+    with open(INACTIVE_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"inactive_ids": sorted(list(inactive_set))}, f, ensure_ascii=False, indent=2)
     return None
 
 # ============================================================
@@ -1672,9 +1693,17 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
     def _period_sum(m):
         return sum(m[i] for i in sel_indices_sorted if i < len(m))
 
-    recup = df[df['risk'] == 'Recuperação'].copy()
-    atencao = df[df['risk'] == 'Atenção'].copy()
-    saudavel = df[df['risk'] == 'Saudável']
+    # Load inactive clients
+    inactive_ids = load_inactive_clients()
+
+    # Separate inactive from active
+    df['_client_id_str'] = df['id'].astype(str).str.strip()
+    df_active = df[~df['_client_id_str'].isin(inactive_ids)].copy()
+    df_inactive = df[df['_client_id_str'].isin(inactive_ids)].copy()
+
+    recup = df_active[df_active['risk'] == 'Recuperação'].copy()
+    atencao = df_active[df_active['risk'] == 'Atenção'].copy()
+    saudavel = df_active[df_active['risk'] == 'Saudável']
 
     recup_impact = recup['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0).sum()
     atencao_impact = atencao['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0).sum()
@@ -1687,36 +1716,54 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["🔴 Recuperação", "🟡 Atenção", "📊 Ranking Vendedores"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔴 Recuperação", "🟡 Atenção", "📊 Ranking Vendedores", f"🚫 Inativos ({len(df_inactive)})"])
+
+    # --- Helper to render a churn table with inactivate buttons ---
+    def _render_churn_table(data, tab_key):
+        if len(data) == 0:
+            st.success(f"Nenhum cliente nesta categoria!")
+            return
+
+        data['total_rev'] = data['monthly'].apply(_period_sum)
+        data['impact'] = data['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0)
+        data['vendor_short'] = data['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
+        data = data.sort_values('total_rev', ascending=False)
+
+        # Multiselect to choose clients to inactivate
+        client_names = data['name'].tolist()
+        selected_to_inactivate = st.multiselect(
+            "Selecione clientes para INATIVAR:",
+            options=client_names,
+            key=f"inactivate_{tab_key}",
+            help="Selecione um ou mais clientes e clique no botão abaixo para marcá-los como inativos"
+        )
+
+        if selected_to_inactivate:
+            if st.button(f"🚫 Inativar {len(selected_to_inactivate)} cliente(s)", key=f"btn_inactivate_{tab_key}", type="primary"):
+                new_inactive = inactive_ids.copy()
+                for name in selected_to_inactivate:
+                    match = data[data['name'] == name]
+                    if len(match) > 0:
+                        cid = str(match.iloc[0]['id']).strip()
+                        new_inactive.add(cid)
+                save_inactive_clients(new_inactive)
+                st.success(f"{len(selected_to_inactivate)} cliente(s) marcado(s) como inativo(s)!")
+                st.rerun()
+
+        display = data[['name','state','vendor_short','last_purchase','months_since','impact','total_rev']].copy()
+        display.columns = ['Cliente','UF','Vendedor','Última Compra','Meses Inativo','Impacto Anual Est.',f'Receita ({period_label})']
+        display['Impacto Anual Est.'] = display['Impacto Anual Est.'].apply(fmt_brl_full)
+        display[f'Receita ({period_label})'] = display[f'Receita ({period_label})'].apply(fmt_brl_full)
+        st.dataframe(display, use_container_width=True, hide_index=True, height=500)
 
     with tab1:
-        if len(recup) > 0:
-            recup['total_rev'] = recup['monthly'].apply(_period_sum)
-            recup['impact'] = recup['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0)
-            recup['vendor_short'] = recup['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
-            display = recup[['name','state','vendor_short','last_purchase','months_since','impact','total_rev']].sort_values('total_rev', ascending=False).copy()
-            display.columns = ['Cliente','UF','Vendedor','Última Compra','Meses Inativo','Impacto Anual Est.',f'Receita ({period_label})']
-            display['Impacto Anual Est.'] = display['Impacto Anual Est.'].apply(fmt_brl_full)
-            display[f'Receita ({period_label})'] = display[f'Receita ({period_label})'].apply(fmt_brl_full)
-            st.dataframe(display, use_container_width=True, hide_index=True, height=500)
-        else:
-            st.success("Nenhum cliente em recuperação!")
+        _render_churn_table(recup, "recup")
 
     with tab2:
-        if len(atencao) > 0:
-            atencao['total_rev'] = atencao['monthly'].apply(_period_sum)
-            atencao['impact'] = atencao['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0)
-            atencao['vendor_short'] = atencao['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
-            display = atencao[['name','state','vendor_short','last_purchase','months_since','impact','total_rev']].sort_values('total_rev', ascending=False).copy()
-            display.columns = ['Cliente','UF','Vendedor','Última Compra','Meses Inativo','Impacto Anual Est.',f'Receita ({period_label})']
-            display['Impacto Anual Est.'] = display['Impacto Anual Est.'].apply(fmt_brl_full)
-            display[f'Receita ({period_label})'] = display[f'Receita ({period_label})'].apply(fmt_brl_full)
-            st.dataframe(display, use_container_width=True, hide_index=True, height=400)
-        else:
-            st.success("Nenhum cliente em atenção!")
+        _render_churn_table(atencao, "atencao")
 
     with tab3:
-        vendor_risk = df.groupby('vendor').apply(lambda g: pd.Series({
+        vendor_risk = df_active.groupby('vendor').apply(lambda g: pd.Series({
             'total': len(g),
             'recuperacao': len(g[g['risk']=='Recuperação']),
             'atencao': len(g[g['risk']=='Atenção']),
@@ -1739,6 +1786,43 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
                     barmode='stack')
         fig.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff', height=350)
         st.plotly_chart(fig, use_container_width=True)
+
+    with tab4:
+        st.subheader("🚫 Clientes Inativados")
+        st.caption("Clientes marcados como inativos são removidos das tabelas de Churn. Você pode reativá-los aqui.")
+
+        if len(df_inactive) == 0:
+            st.info("Nenhum cliente inativado ainda.")
+        else:
+            df_inactive['total_rev'] = df_inactive['monthly'].apply(_period_sum)
+            df_inactive['vendor_short'] = df_inactive['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
+            df_inactive_sorted = df_inactive.sort_values('name')
+
+            # Multiselect to reactivate
+            inactive_names = df_inactive_sorted['name'].tolist()
+            selected_to_reactivate = st.multiselect(
+                "Selecione clientes para REATIVAR:",
+                options=inactive_names,
+                key="reactivate_clients",
+                help="Selecione clientes para devolvê-los às tabelas de Churn"
+            )
+
+            if selected_to_reactivate:
+                if st.button(f"✅ Reativar {len(selected_to_reactivate)} cliente(s)", key="btn_reactivate", type="primary"):
+                    new_inactive = inactive_ids.copy()
+                    for name in selected_to_reactivate:
+                        match = df_inactive[df_inactive['name'] == name]
+                        if len(match) > 0:
+                            cid = str(match.iloc[0]['id']).strip()
+                            new_inactive.discard(cid)
+                    save_inactive_clients(new_inactive)
+                    st.success(f"{len(selected_to_reactivate)} cliente(s) reativado(s)!")
+                    st.rerun()
+
+            display_inact = df_inactive_sorted[['name','state','vendor_short','risk','last_purchase','months_since','total_rev']].copy()
+            display_inact.columns = ['Cliente','UF','Vendedor','Risco Original','Última Compra','Meses Inativo',f'Receita ({period_label})']
+            display_inact[f'Receita ({period_label})'] = display_inact[f'Receita ({period_label})'].apply(fmt_brl_full)
+            st.dataframe(display_inact, use_container_width=True, hide_index=True, height=500)
 
 # ============================================================
 # PAGE: PRODUTOS

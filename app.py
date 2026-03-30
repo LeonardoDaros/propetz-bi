@@ -151,6 +151,12 @@ def load_users():
                 "password": hash_password("cristiane2026"),
                 "role": "vendedor",
                 "vendor_filter": "Cristiane La Maison Propetz"
+            },
+            "grasiele": {
+                "name": "Grasiele",
+                "password": hash_password("grasiele2026"),
+                "role": "diretor",
+                "vendor_filter": None
             }
         }
     }
@@ -167,6 +173,118 @@ def verify_login(username, password):
     user = users["users"].get(username)
     if user and user["password"] == hash_password(password):
         return user
+    return None
+
+# ============================================================
+# BRUTE FORCE PROTECTION
+# ============================================================
+LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(__file__), "login_attempts.json")
+
+def _load_login_attempts():
+    if os.path.exists(LOGIN_ATTEMPTS_FILE):
+        try:
+            with open(LOGIN_ATTEMPTS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_login_attempts(data):
+    with open(LOGIN_ATTEMPTS_FILE, 'w') as f:
+        json.dump(data, f)
+
+def check_rate_limit(username):
+    """Returns (is_blocked, seconds_remaining). Blocks after 5 failed attempts for 5 minutes."""
+    attempts = _load_login_attempts()
+    key = username.lower().strip()
+    if key not in attempts:
+        return False, 0
+    info = attempts[key]
+    fail_count = info.get("count", 0)
+    last_fail = info.get("last_fail", 0)
+    now = datetime.now().timestamp()
+    # Reset after 5 minutes
+    if now - last_fail > 300:
+        del attempts[key]
+        _save_login_attempts(attempts)
+        return False, 0
+    if fail_count >= 5:
+        remaining = int(300 - (now - last_fail))
+        return True, max(remaining, 0)
+    return False, 0
+
+def record_failed_attempt(username):
+    attempts = _load_login_attempts()
+    key = username.lower().strip()
+    now = datetime.now().timestamp()
+    if key not in attempts:
+        attempts[key] = {"count": 1, "last_fail": now}
+    else:
+        # Reset if last attempt was over 5 min ago
+        if now - attempts[key].get("last_fail", 0) > 300:
+            attempts[key] = {"count": 1, "last_fail": now}
+        else:
+            attempts[key]["count"] = attempts[key].get("count", 0) + 1
+            attempts[key]["last_fail"] = now
+    _save_login_attempts(attempts)
+
+def clear_failed_attempts(username):
+    attempts = _load_login_attempts()
+    key = username.lower().strip()
+    if key in attempts:
+        del attempts[key]
+        _save_login_attempts(attempts)
+
+# ============================================================
+# ACCESS LOG (tracks who, when, where, duration)
+# ============================================================
+ACCESS_LOG_FILE = os.path.join(os.path.dirname(__file__), "access_log.json")
+
+def _load_access_log():
+    if os.path.exists(ACCESS_LOG_FILE):
+        try:
+            with open(ACCESS_LOG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def _save_access_log(log):
+    # Keep last 5000 entries to avoid file bloat
+    log = log[-5000:]
+    with open(ACCESS_LOG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(log, f, ensure_ascii=False, indent=1)
+
+def log_access(username, user_name, action="login"):
+    """Log a user access event."""
+    log = _load_access_log()
+    log.append({
+        "user": username,
+        "name": user_name,
+        "action": action,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "time": datetime.now().strftime("%H:%M:%S"),
+    })
+    _save_access_log(log)
+
+def log_page_view(username, page_name):
+    """Log a page view event."""
+    log = _load_access_log()
+    log.append({
+        "user": username,
+        "name": st.session_state.get("user_name", username),
+        "action": "page_view",
+        "page": page_name,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "time": datetime.now().strftime("%H:%M:%S"),
+    })
+    _save_access_log(log)
+
+def has_full_data_access():
+    """Returns True for admin and diretor roles (see all data, no vendor filter)."""
+    return st.session_state.get('role') in ('admin', 'diretor')
 
 # ============================================================
 # INACTIVE CLIENTS DATABASE (stored in JSON - persists across sessions)
@@ -242,17 +360,36 @@ def login_page():
     password = st.text_input("Senha", type="password", key="login_pass")
 
     if st.button("Entrar", use_container_width=True, type="primary"):
-        user = verify_login(username, password)
-        if user:
-            st.session_state["authenticated"] = True
-            st.session_state["username"] = username
-            st.session_state["user_name"] = user["name"]
-            st.session_state["role"] = user["role"]
-            st.session_state["vendor_filter"] = user.get("vendor_filter")
-            _set_login_params(username, user)
-            st.rerun()
+        if not username or not password:
+            st.error("Preencha usuário e senha.")
         else:
-            st.error("Usuário ou senha incorretos.")
+            # Check rate limit (brute force protection)
+            is_blocked, seconds_left = check_rate_limit(username)
+            if is_blocked:
+                minutes = seconds_left // 60
+                secs = seconds_left % 60
+                st.error(f"🔒 Conta temporariamente bloqueada. Muitas tentativas incorretas. Tente novamente em {minutes}m{secs}s.")
+            else:
+                user = verify_login(username, password)
+                if user:
+                    clear_failed_attempts(username)
+                    st.session_state["authenticated"] = True
+                    st.session_state["username"] = username
+                    st.session_state["user_name"] = user["name"]
+                    st.session_state["role"] = user["role"]
+                    st.session_state["vendor_filter"] = user.get("vendor_filter")
+                    _set_login_params(username, user)
+                    log_access(username, user["name"], "login")
+                    st.rerun()
+                else:
+                    record_failed_attempt(username)
+                    attempts = _load_login_attempts()
+                    key = username.lower().strip()
+                    remaining = 5 - attempts.get(key, {}).get("count", 0)
+                    if remaining > 0:
+                        st.error(f"Usuário ou senha incorretos. ({remaining} tentativas restantes)")
+                    else:
+                        st.error("🔒 Conta bloqueada por 5 minutos após muitas tentativas incorretas.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1314,7 +1451,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     months_active = sum(1 for i in sel_indices_sorted if i < len(c['monthly']) and c['monthly'][i] > 0)
     avg = total / months_active if months_active > 0 else 0
 
-    is_admin = st.session_state.get('role') == 'admin'
+    is_admin = has_full_data_access()
     total_qty_all = products_df['total_qty'].sum()
 
     # Check if we have client×product data
@@ -1358,7 +1495,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
 
         # Top products chart
         top15 = cp_enriched.head(15)
-        _is_admin_chart = st.session_state.get('role') == 'admin'
+        _is_admin_chart = has_full_data_access()
         fig_top = px.bar(top15, y='product_name', x='total_qty', orientation='h', color='abc',
                         title="Top 15 Produtos do Cliente" + (" (quantidade total comprada)" if _is_admin_chart else ""),
                         color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'},
@@ -1528,7 +1665,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             # Create label with SKU + product name
             sku_qty['label'] = sku_qty['sku'] + ' - ' + sku_qty['produto']
 
-            _is_admin_mix = st.session_state.get('role') == 'admin'
+            _is_admin_mix = has_full_data_access()
 
             fig_top20 = px.bar(
                 sku_qty,
@@ -1830,7 +1967,7 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 def page_products(products_df):
     st.header("📦 Análise de Produtos")
 
-    is_admin = st.session_state.get('role') == 'admin'
+    is_admin = has_full_data_access()
 
     count_a = len(products_df[products_df['abc']=='A'])
     count_b = len(products_df[products_df['abc']=='B'])
@@ -1979,6 +2116,77 @@ def page_admin():
         st.cache_data.clear()
         st.rerun()
 
+    st.divider()
+
+    # ============================================================
+    # ACCESS MONITORING PANEL
+    # ============================================================
+    st.subheader("📡 Monitoramento de Acessos")
+    st.caption("Acompanhe quando e como o time está utilizando o sistema")
+
+    access_log = _load_access_log()
+
+    if len(access_log) == 0:
+        st.info("Nenhum acesso registrado ainda. Os logs começam a ser gerados a partir do próximo login.")
+    else:
+        df_log = pd.DataFrame(access_log)
+
+        # --- Filters ---
+        log_col1, log_col2 = st.columns(2)
+        with log_col1:
+            _all_users_log = sorted(df_log['user'].unique().tolist())
+            _filter_users = st.multiselect("Filtrar por usuário", options=_all_users_log, default=_all_users_log, key="log_filter_users")
+        with log_col2:
+            _all_dates = sorted(df_log['date'].unique().tolist(), reverse=True)
+            _default_dates = _all_dates[:7] if len(_all_dates) > 7 else _all_dates
+            _filter_dates = st.multiselect("Filtrar por data", options=_all_dates, default=_default_dates, key="log_filter_dates")
+
+        df_filtered = df_log[df_log['user'].isin(_filter_users) & df_log['date'].isin(_filter_dates)].copy()
+
+        # --- KPIs ---
+        _logins = df_filtered[df_filtered['action'] == 'login']
+        _page_views = df_filtered[df_filtered['action'] == 'page_view']
+        _unique_users = _logins['user'].nunique()
+        _total_logins = len(_logins)
+        _total_views = len(_page_views)
+
+        mk1, mk2, mk3 = st.columns(3)
+        mk1.metric("👥 Usuários Ativos", f"{_unique_users}")
+        mk2.metric("🔑 Total de Logins", f"{_total_logins}")
+        mk3.metric("📄 Páginas Visitadas", f"{_total_views}")
+
+        # --- Logins per user per day ---
+        if len(_logins) > 0:
+            st.markdown("**📊 Logins por Usuário por Dia**")
+            login_pivot = _logins.groupby(['date', 'name']).size().reset_index(name='logins')
+            fig_logins = px.bar(login_pivot, x='date', y='logins', color='name',
+                               title="Histórico de Logins",
+                               labels={'date': 'Data', 'logins': 'Logins', 'name': 'Usuário'},
+                               barmode='group')
+            fig_logins.update_layout(template='plotly_white', paper_bgcolor='#ffffff',
+                                    plot_bgcolor='#ffffff', height=350)
+            st.plotly_chart(fig_logins, use_container_width=True)
+
+        # --- Pages most visited ---
+        if len(_page_views) > 0:
+            st.markdown("**📄 Páginas Mais Acessadas por Usuário**")
+            page_usage = _page_views.groupby(['name', 'page']).size().reset_index(name='visitas')
+            page_usage = page_usage.sort_values('visitas', ascending=False)
+            st.dataframe(page_usage.rename(columns={'name': 'Usuário', 'page': 'Página', 'visitas': 'Visitas'}),
+                        use_container_width=True, hide_index=True, height=300)
+
+        # --- Full log table ---
+        st.markdown("**📋 Log Completo de Acessos**")
+        display_log = df_filtered.sort_values('timestamp', ascending=False)
+        display_cols = ['timestamp', 'name', 'action']
+        if 'page' in display_log.columns:
+            display_cols.append('page')
+        display_log_show = display_log[display_cols].copy()
+        col_names = {'timestamp': 'Data/Hora', 'name': 'Usuário', 'action': 'Ação', 'page': 'Página'}
+        display_log_show = display_log_show.rename(columns=col_names)
+        display_log_show['Ação'] = display_log_show['Ação'].replace({'login': '🔑 Login', 'page_view': '📄 Página'})
+        st.dataframe(display_log_show, use_container_width=True, hide_index=True, height=400)
+
 # ============================================================
 # MAIN APP
 # ============================================================
@@ -2054,14 +2262,16 @@ def main():
 
     with st.sidebar:
         # --- User greeting (compact) ---
-        _role_icon = "🔑" if st.session_state['role'] == 'admin' else "👤"
+        _role = st.session_state['role']
+        _role_icon = "🔑" if _role == 'admin' else ("👔" if _role == 'diretor' else "👤")
+        _role_label = {'admin': 'Admin', 'diretor': 'Diretora', 'vendedor': 'Vendedor'}.get(_role, _role.title())
         st.markdown(f"""
         <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px 0">
             <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
                         display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">{_role_icon}</div>
             <div>
                 <div style="font-weight:700;font-size:14px;line-height:1.2">{st.session_state['user_name']}</div>
-                <div style="font-size:11px;opacity:.6">{'Admin' if st.session_state['role'] == 'admin' else 'Vendedor'}</div>
+                <div style="font-size:11px;opacity:.6">{_role_label}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -2235,6 +2445,12 @@ def main():
 
     # Route to page
     page = pages[selected_page]
+
+    # Log page view (only once per page per session to avoid spam)
+    _page_log_key = f"_logged_page_{page}"
+    if _page_log_key not in st.session_state:
+        st.session_state[_page_log_key] = True
+        log_page_view(st.session_state.get("username", ""), selected_page)
 
     if page == "overview":
         page_overview(df_clients, months, year_ranges, sel_indices, sel_indices_sorted, sel_months)

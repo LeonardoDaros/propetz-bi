@@ -14,6 +14,11 @@ users:
     password: 287c120be89d0680068d4315d918c6961d1d417acb0db3b804e014cd86578564
     role: admin
     vendor_filter: null
+  grasiele:
+    name: Grasiele
+    password: 9901aaa5e3d9942df4e12d59e084726fd13e9b128f10fa0c0d5f4ad75c0b18b1
+    role: diretor
+    vendor_filter: null
   yasmin:
     name: Yasmin
     password: 02f51ef20e92606dbbb74251c6711cdc4a6c193a58ebed926c3c456780bcdbf3

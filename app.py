@@ -1925,85 +1925,160 @@ def main():
             all_years_ordered.append(y_full)
             _seen_years.add(y_full)
 
-    # Month name order (lowercase, matching Excel labels)
-    MONTH_ORDER = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez']
-    # Only show months that actually exist in the data
-    existing_month_names = set()
-    for lbl in months:
-        parts = lbl.replace('-', '/').split('/')
-        if len(parts) >= 2:
-            existing_month_names.add(parts[0].strip().lower())
-    month_options = [m for m in MONTH_ORDER if m in existing_month_names]
-
-    # Sidebar navigation
+    # ========== COMPACT SIDEBAR ==========
     with st.sidebar:
-        st.markdown(f"### 👋 {st.session_state['user_name']}")
-        st.caption(f"{'🔑 Admin' if st.session_state['role'] == 'admin' else '👤 Vendedor'}")
+        # --- User greeting (compact) ---
+        _role_icon = "🔑" if st.session_state['role'] == 'admin' else "👤"
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px 0">
+            <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
+                        display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">{_role_icon}</div>
+            <div>
+                <div style="font-weight:700;font-size:14px;line-height:1.2">{st.session_state['user_name']}</div>
+                <div style="font-size:11px;opacity:.6">{'Admin' if st.session_state['role'] == 'admin' else 'Vendedor'}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if st.session_state.get("vendor_filter"):
-            st.info(f"📋 Sua carteira: {len(df_clients)} clientes")
-
-        st.divider()
-
+        # --- Navigation with compact icon buttons ---
         pages = {
             "📊 Visão Geral": "overview",
             "👤 Clientes": "clients",
             "🧩 Mix de Produtos": "mix",
-            "⚠️ Gestão de Churn": "churn",
+            "⚠️ Churn": "churn",
             "📦 Produtos": "products",
         }
-
         if st.session_state["role"] == "admin":
             pages["⚙️ Admin"] = "admin"
 
         selected_page = st.radio("Navegação", list(pages.keys()), label_visibility="collapsed")
 
-        st.divider()
+        st.markdown("---")
 
-        # --- Period filters (visible on all pages) ---
-        st.markdown("**Filtro de Período**")
+        # --- Period Filter with Slider ---
+        st.markdown("""
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;opacity:.5;margin-bottom:4px">
+        📅 Período</div>""", unsafe_allow_html=True)
 
         # Chart click override indicator
         chart_override_active = "chart_sel_months" in st.session_state and st.session_state["chart_sel_months"]
         if chart_override_active:
             n_chart = len(st.session_state["chart_sel_months"])
-            st.info(f"📊 Seleção do gráfico ativa ({n_chart} {'mês' if n_chart == 1 else 'meses'})")
-            if st.button("✕ Limpar seleção do gráfico", use_container_width=True, key="clear_chart"):
+            st.info(f"📊 Seleção via gráfico ({n_chart} {'mês' if n_chart == 1 else 'meses'})")
+            if st.button("✕ Limpar", use_container_width=True, key="clear_chart"):
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Default year: most recent with 6+ months of data
-        _best_default_year = all_years_ordered[-1] if all_years_ordered else ""
-        for yr in reversed(all_years_ordered):
-            yr_months = [lbl for lbl in months if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
-            if len(yr_months) >= 6:
-                _best_default_year = yr
-                break
+        # Build slider from month labels
+        if len(months) >= 2:
+            # Find best default range: most recent year with 6+ months
+            _best_start_idx = 0
+            for yr in reversed(all_years_ordered):
+                yr_indices = [i for i, lbl in enumerate(months) if lbl.split('/')[-1].strip() in [yr[-2:], yr]]
+                if len(yr_indices) >= 6:
+                    _best_start_idx = yr_indices[0]
+                    break
 
-        selected_years = st.multiselect(
-            "Ano",
-            options=all_years_ordered,
-            default=[_best_default_year] if _best_default_year else [],
-            key="global_years"
-        )
-        selected_month_names = st.multiselect(
-            "Mês",
-            options=month_options,
-            default=month_options,
-            key="global_months"
-        )
+            _default_start = months[_best_start_idx]
+            _default_end = months[-1]
 
-        st.divider()
+            slider_range = st.select_slider(
+                "Período",
+                options=months,
+                value=(_default_start, _default_end),
+                label_visibility="collapsed",
+                key="period_slider"
+            )
+            _slider_start_idx = months.index(slider_range[0])
+            _slider_end_idx = months.index(slider_range[1])
+
+            # Quick shortcuts
+            st.markdown('<div style="font-size:11px;opacity:.5;margin-bottom:2px">Atalhos:</div>', unsafe_allow_html=True)
+            _shortcut_cols = st.columns(4)
+            with _shortcut_cols[0]:
+                _btn_1m = st.button("1M", use_container_width=True, key="sc_1m")
+            with _shortcut_cols[1]:
+                _btn_3m = st.button("3M", use_container_width=True, key="sc_3m")
+            with _shortcut_cols[2]:
+                _btn_6m = st.button("6M", use_container_width=True, key="sc_6m")
+            with _shortcut_cols[3]:
+                _btn_ytd = st.button("YTD", use_container_width=True, key="sc_ytd")
+
+            # Handle shortcut clicks
+            if _btn_1m:
+                st.session_state["period_slider"] = (months[-1], months[-1])
+                st.rerun()
+            elif _btn_3m:
+                _start = max(0, len(months) - 3)
+                st.session_state["period_slider"] = (months[_start], months[-1])
+                st.rerun()
+            elif _btn_6m:
+                _start = max(0, len(months) - 6)
+                st.session_state["period_slider"] = (months[_start], months[-1])
+                st.rerun()
+            elif _btn_ytd:
+                # Find first month of current year (last year in data)
+                _current_yr = all_years_ordered[-1] if all_years_ordered else ""
+                _ytd_start = len(months) - 1
+                for i, lbl in enumerate(months):
+                    y_raw = lbl.split('/')[-1].strip()
+                    y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
+                    if y_full == _current_yr:
+                        _ytd_start = i
+                        break
+                st.session_state["period_slider"] = (months[_ytd_start], months[-1])
+                st.rerun()
+
+            # Show selected range summary
+            _n_months_sel = _slider_end_idx - _slider_start_idx + 1
+            st.markdown(f"""
+            <div style="background:rgba(255,107,53,0.1);border-radius:8px;padding:8px 10px;margin-top:6px">
+                <div style="font-size:12px;font-weight:600;color:#FF6B35">{slider_range[0]} → {slider_range[1]}</div>
+                <div style="font-size:11px;opacity:.6">{_n_months_sel} {'mês' if _n_months_sel == 1 else 'meses'} selecionado{'s' if _n_months_sel > 1 else ''}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            _slider_start_idx = 0
+            _slider_end_idx = len(months) - 1
+
+        st.markdown("---")
+
+        # --- Data summary ---
+        _total_clients = len(df_clients)
+        _risk_counts = df_clients['risk'].value_counts() if 'risk' in df_clients.columns else {}
+        _healthy = _risk_counts.get('Saudável', 0)
+        _attention = _risk_counts.get('Atenção', 0)
+        _recovery = _risk_counts.get('Recuperação', 0)
+
+        st.markdown(f"""
+        <div style="font-size:11px;opacity:.5;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Resumo</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;color:#FF6B35">{_total_clients}</div>
+                <div style="font-size:10px;opacity:.5">Clientes</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;color:#4CAF50">{_healthy}</div>
+                <div style="font-size:10px;opacity:.5">Saudáveis</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;color:#FFC107">{_attention}</div>
+                <div style="font-size:10px;opacity:.5">Atenção</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;color:#F44336">{_recovery}</div>
+                <div style="font-size:10px;opacity:.5">Recuperação</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
 
         if st.button("🚪 Sair", use_container_width=True):
             _clear_login_params()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
-
-        st.divider()
-        st.caption(f"📅 Dados: {months[0]} a {months[-1]}")
-        st.caption(f"👥 {len(df_clients)} clientes")
 
     # --- Build selected indices ---
     # Chart click override takes priority over sidebar filters
@@ -2015,18 +2090,8 @@ def main():
             if lbl in months:
                 sel_indices.add(months.index(lbl))
     else:
-        sel_indices = set()
-        for i, lbl in enumerate(months):
-            parts = lbl.replace('-', '/').split('/')
-            if len(parts) >= 2:
-                m_name = parts[0].strip().lower()
-                y_raw = parts[-1].strip()
-                y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
-            else:
-                m_name = lbl.lower()
-                y_full = ""
-            if y_full in selected_years and m_name in selected_month_names:
-                sel_indices.add(i)
+        # Use slider range (continuous range from start to end)
+        sel_indices = set(range(_slider_start_idx, _slider_end_idx + 1))
 
     # Fallback: if nothing selected, select all
     if not sel_indices:

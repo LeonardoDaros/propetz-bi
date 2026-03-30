@@ -1337,14 +1337,19 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
 
         # Top products chart
         top15 = cp_enriched.head(15)
+        _is_admin_chart = st.session_state.get('role') == 'admin'
         fig_top = px.bar(top15, y='product_name', x='total_qty', orientation='h', color='abc',
-                        title="Top 15 Produtos do Cliente (quantidade total comprada)",
+                        title="Top 15 Produtos do Cliente" + (" (quantidade total comprada)" if _is_admin_chart else ""),
                         color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'},
-                        text='total_qty')
-        fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+                        text='total_qty' if _is_admin_chart else None)
+        if _is_admin_chart:
+            fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+            fig_top.update_layout(xaxis=dict(title='Quantidade Total Comprada'))
+        else:
+            fig_top.update_traces(text=None, textposition=None)
+            fig_top.update_layout(xaxis=dict(title='', showticklabels=False))
         fig_top.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-                             yaxis=dict(autorange='reversed', title=''),
-                             xaxis=dict(title='Quantidade Total Comprada'), height=450, showlegend=True)
+                             yaxis=dict(autorange='reversed', title=''), height=450, showlegend=True)
         st.plotly_chart(fig_top, use_container_width=True)
 
         # Table
@@ -1491,17 +1496,19 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     if len(df_sku) > 0:
         st.subheader("📊 Top 20 Produtos por Quantidade")
         st.caption("Produtos mais comprados em quantidade geral (todos os clientes)")
-        
+
         # Aggregate by SKU and product
         sku_qty = df_sku.groupby(['sku', 'produto']).agg({
             'quantidade': 'sum'
         }).reset_index()
         sku_qty = sku_qty.sort_values('quantidade', ascending=False).head(20)
-        
+
         if len(sku_qty) > 0:
             # Create label with SKU + product name
             sku_qty['label'] = sku_qty['sku'] + ' - ' + sku_qty['produto']
-            
+
+            _is_admin_mix = st.session_state.get('role') == 'admin'
+
             fig_top20 = px.bar(
                 sku_qty,
                 y='label',
@@ -1511,21 +1518,30 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                 color='quantidade',
                 color_continuous_scale='Blues'
             )
+            # Vendedores: sem texto de quantidade no gráfico e sem eixo X
+            if not _is_admin_mix:
+                fig_top20.update_traces(text=None, textposition=None)
+                fig_top20.update_layout(
+                    xaxis=dict(title='', showticklabels=False),
+                    coloraxis_showscale=False
+                )
+            else:
+                fig_top20.update_layout(xaxis=dict(title='Quantidade Total'))
             fig_top20.update_layout(
                 template='plotly_white',
                 paper_bgcolor='#ffffff',
                 plot_bgcolor='#ffffff',
                 yaxis=dict(autorange='reversed', title=''),
-                xaxis=dict(title='Quantidade Total'),
                 height=500,
                 showlegend=False
             )
             st.plotly_chart(fig_top20, use_container_width=True)
-            
-            # Table view
-            disp_top20 = sku_qty[['sku', 'produto', 'quantidade']].copy()
-            disp_top20.columns = ['SKU', 'Produto', 'Quantidade Total']
-            st.dataframe(disp_top20, use_container_width=True, hide_index=True)
+
+            # Table view — only for admin
+            if _is_admin_mix:
+                disp_top20 = sku_qty[['sku', 'produto', 'quantidade']].copy()
+                disp_top20.columns = ['SKU', 'Produto', 'Quantidade Total']
+                st.dataframe(disp_top20, use_container_width=True, hide_index=True)
         
         st.divider()
 
@@ -1583,7 +1599,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             gap_df = gap_df.sort_values('Potencial Extra/Mês', ascending=False)
             
             if len(gap_df) > 0:
-                st.dataframe(gap_df, use_container_width=True, hide_index=True)
+                st.dataframe(gap_df, use_container_width=True, hide_index=True, height=400)
                 
                 # Top opportunities insight
                 top_gap = gap_df.head(3)

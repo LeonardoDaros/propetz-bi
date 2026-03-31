@@ -1,26 +1,26 @@
 users:
   cristiane:
     name: Cristiane
-    password: 650eb7a5aea66281b29ea282fd8d8fceaa88bb7d82b5e2618226c36393d6f2b3
+    password: 571bbac082abc22f62ce4da84c8f7f0ec685cde206e88edfbc69a3ae0c564dc0
     role: vendedor
     vendor_filter: Cristiane La Maison Propetz
   emanuel:
     name: Emanuel
-    password: 565884a80224c9d9b0295b58fbf99a7a7d092a4ee8de9c0747ce923e15b7771e
+    password: 4acc5224450cfab32dce151a13bad8415e7e9ae507d7ceed8282187ecb029083
     role: vendedor
     vendor_filter: Emanuel Propetz Distribuição
   leonardo:
     name: Leonardo Daros
-    password: 287c120be89d0680068d4315d918c6961d1d417acb0db3b804e014cd86578564
+    password: 4a5c137560d1cf80b0e94b6704266f5cdbbc917e768071adfca8e4fb6b88d5a6
     role: admin
     vendor_filter: null
   grasiele:
     name: Grasiele
-    password: 9901aaa5e3d9942df4e12d59e084726fd13e9b128f10fa0c0d5f4ad75c0b18b1
+    password: 66bd594f2fa442bad62ac3beb75064eb080416f448b54a406c20742d29c2abc9
     role: diretor
     vendor_filter: null
   yasmin:
     name: Yasmin
-    password: 02f51ef20e92606dbbb74251c6711cdc4a6c193a58ebed926c3c456780bcdbf3
+    password: 32a310c40cc1a612551bc389f5acfe3e5c56f20344949f2cdd3105fb8e375cb6
     role: vendedor
     vendor_filter: Yasmin Propetz Distribuição

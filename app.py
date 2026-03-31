@@ -2147,7 +2147,7 @@ def main():
     result = load_data()
     if result[0] is None or len(result) < 6:
         st.warning("Não foi possível carregar os dados. Verifique se o arquivo Excel está na pasta do app.")
-        if st.session_state.get("role") == "admin":
+        if st.session_state.get("role") in ("admin", "diretor"):
             st.subheader("Upload da planilha")
             uploaded = st.file_uploader("Envie a planilha (.xlsx)", type=['xlsx'])
             if uploaded:
@@ -2230,7 +2230,7 @@ def main():
             "⚠️ Churn": "churn",
             "📦 Produtos": "products",
         }
-        if st.session_state["role"] == "admin":
+        if st.session_state.get("role") in ("admin", "diretor"):
             pages["⚙️ Admin"] = "admin"
 
         selected_page = st.radio("Navegação", list(pages.keys()), label_visibility="collapsed")

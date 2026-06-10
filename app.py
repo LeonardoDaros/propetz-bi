@@ -7,6 +7,9 @@ import yaml
 import os
 import hashlib
 import json
+import base64
+import threading
+import requests
 from datetime import datetime
 
 # ============================================================
@@ -167,6 +170,7 @@ def hash_password(pwd):
 def save_users(users_data):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         yaml.dump(users_data, f, default_flow_style=False, allow_unicode=True)
+    _push_state_file("users.yaml")
 
 def verify_login(username, password):
     users = load_users()
@@ -254,6 +258,7 @@ def _save_access_log(log):
     log = log[-5000:]
     with open(ACCESS_LOG_FILE, 'w', encoding='utf-8') as f:
         json.dump(log, f, ensure_ascii=False, indent=1)
+    _push_state_file("access_log.json")
 
 def log_access(username, user_name, action="login"):
     """Log a user access event."""
@@ -306,7 +311,118 @@ def save_inactive_clients(inactive_set):
     """Save set of inactive client IDs to JSON file."""
     with open(INACTIVE_FILE, 'w', encoding='utf-8') as f:
         json.dump({"inactive_ids": sorted(list(inactive_set))}, f, ensure_ascii=False, indent=2)
+    _push_state_file("inactive_clients.json")
     return None
+
+# ============================================================
+# PERSISTÊNCIA REMOTA (GitHub) — o disco do Streamlit Cloud é
+# temporário: tudo que não está no repositório some quando o
+# container reinicia. Arquivos de ESTADO (usuários, inativados,
+# log de acesso) são salvos no branch 'state' do repo via API;
+# a planilha enviada pelo Admin é commitada no branch 'main'.
+# Requer GITHUB_TOKEN nos secrets do Streamlit Cloud. Sem token,
+# tudo continua funcionando apenas localmente (sem persistência).
+# ============================================================
+_GH_API = "https://api.github.com"
+_GH_REPO = "LeonardoDaros/propetz-bi"
+_GH_STATE_BRANCH = "state"
+_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json"]
+
+def _gh_token():
+    try:
+        return st.secrets.get("GITHUB_TOKEN", None)
+    except Exception:
+        return None
+
+def _gh_headers(token):
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+def _gh_get_file(path, branch):
+    """Lê um arquivo do repo. Retorna (bytes, sha) ou (None, None)."""
+    token = _gh_token()
+    if not token:
+        return None, None
+    try:
+        r = requests.get(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                         params={"ref": branch}, headers=_gh_headers(token), timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            return base64.b64decode(data["content"]), data["sha"]
+    except Exception:
+        pass
+    return None, None
+
+def _gh_ensure_state_branch():
+    """Cria o branch 'state' a partir do main, se ainda não existir."""
+    token = _gh_token()
+    if not token:
+        return False
+    try:
+        r = requests.get(f"{_GH_API}/repos/{_GH_REPO}/git/ref/heads/{_GH_STATE_BRANCH}",
+                         headers=_gh_headers(token), timeout=15)
+        if r.status_code == 200:
+            return True
+        r_main = requests.get(f"{_GH_API}/repos/{_GH_REPO}/git/ref/heads/main",
+                              headers=_gh_headers(token), timeout=15)
+        if r_main.status_code != 200:
+            return False
+        sha = r_main.json()["object"]["sha"]
+        r_new = requests.post(f"{_GH_API}/repos/{_GH_REPO}/git/refs",
+                              json={"ref": f"refs/heads/{_GH_STATE_BRANCH}", "sha": sha},
+                              headers=_gh_headers(token), timeout=15)
+        return r_new.status_code in (200, 201)
+    except Exception:
+        return False
+
+def _gh_put_file(path, content_bytes, message, branch):
+    """Cria/atualiza um arquivo no repo. Retorna True se salvou."""
+    token = _gh_token()
+    if not token:
+        return False
+    try:
+        if branch == _GH_STATE_BRANCH and not _gh_ensure_state_branch():
+            return False
+        _, sha = _gh_get_file(path, branch)
+        payload = {"message": message,
+                   "content": base64.b64encode(content_bytes).decode(),
+                   "branch": branch}
+        if sha:
+            payload["sha"] = sha
+        r = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                         json=payload, headers=_gh_headers(token), timeout=60)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+def _push_state_file(filename):
+    """Envia um arquivo de estado para o branch 'state' em segundo plano
+    (thread) para não travar a interface. Melhor esforço: falha silenciosa."""
+    if not _gh_token():
+        return
+    local = os.path.join(os.path.dirname(__file__), filename)
+    if not os.path.exists(local):
+        return
+    with open(local, "rb") as f:
+        content = f.read()
+
+    def _send():
+        _gh_put_file(filename, content, f"Estado: {filename}", _GH_STATE_BRANCH)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+@st.cache_resource
+def _sync_state_from_github():
+    """Roda 1x por processo (boot do container): restaura os arquivos de
+    estado a partir do branch 'state', se existirem lá."""
+    for filename in _STATE_FILES:
+        content, _ = _gh_get_file(filename, _GH_STATE_BRANCH)
+        if content:
+            try:
+                with open(os.path.join(os.path.dirname(__file__), filename), "wb") as f:
+                    f.write(content)
+            except Exception:
+                pass
+    return True
 
 # ============================================================
 # SESSION PERSISTENCE (via query params — native Streamlit, no extra libs)
@@ -419,17 +535,46 @@ def load_data():
     except:
         pass
 
+    # Usa o primeiro candidato que realmente é a planilha-fonte (tem a aba 'IA');
+    # evita quebrar se outro .xlsx qualquer estiver na pasta.
     xlsx_path = None
     for p in possible_paths:
         if os.path.exists(p) and os.path.getsize(p) > 0:
-            xlsx_path = p
-            break
+            try:
+                wb_test = openpyxl.load_workbook(p, read_only=True)
+                has_ia = 'IA' in wb_test.sheetnames
+                wb_test.close()
+            except Exception:
+                has_ia = False
+            if has_ia:
+                xlsx_path = p
+                break
 
     if not xlsx_path:
         st.error("Arquivo Excel não encontrado. Faça upload na barra lateral.")
         return None, None, None, None, None, None
 
     return process_excel(xlsx_path)
+
+def _handle_planilha_upload(uploaded):
+    """Salva a planilha enviada localmente e tenta commitá-la no branch main
+    do GitHub (persistência real — sobrevive a reinícios do Streamlit Cloud).
+    Retorna True se o commit remoto funcionou."""
+    data = bytes(uploaded.getbuffer())
+    app_dir = os.path.dirname(__file__)
+    with open(os.path.join(app_dir, "Relatorio Distribuidores Mensal.xlsx"), "wb") as f:
+        f.write(data)
+    # Remove o nome antigo para não sombrear a planilha nova na ordem de busca
+    old = os.path.join(app_dir, "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx")
+    try:
+        if os.path.exists(old):
+            os.remove(old)
+    except Exception:
+        pass
+    pushed = _gh_put_file("Relatorio Distribuidores Mensal.xlsx", data,
+                          "Atualização da planilha via app", "main")
+    st.cache_data.clear()
+    return pushed
 
 # Mapeamento de vendedores (unificação de carteiras)
 VENDOR_MERGE = {
@@ -778,6 +923,20 @@ def fmt_brl(v):
 def fmt_brl_full(v):
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+def annual_value_estimate(monthly):
+    """Valor anual estimado do cliente: ticket médio dos meses COM compra
+    nos últimos 12 meses × 12. Se não comprou nos últimos 12 meses, usa o
+    ticket médio histórico. (Substitui o cálculo antigo travado em 2024/2023.)"""
+    if not isinstance(monthly, (list, tuple)) or len(monthly) == 0:
+        return 0
+    last12 = [v for v in monthly[-12:] if v > 0]
+    if last12:
+        return sum(last12) / len(last12) * 12
+    hist = [v for v in monthly if v > 0]
+    if hist:
+        return sum(hist) / len(hist) * 12
+    return 0
+
 def risk_badge(risk):
     if risk == 'Recuperação':
         return '<span class="badge badge-red">Recuperação</span>'
@@ -801,6 +960,145 @@ def insight_html(type_, label, text, action):
         <div class="insight-action">{action}</div>
     </div>
     """
+
+# ============================================================
+# PAGE: MINHAS AÇÕES (tela inicial — lista priorizada de trabalho)
+# ============================================================
+def _csv_download(df_export, label, filename, key):
+    """Botão de download CSV no padrão Excel brasileiro (; e vírgula decimal)."""
+    csv_bytes = df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+    st.download_button(label, csv_bytes, file_name=filename, mime="text/csv", key=key)
+
+def page_actions(df, df_sku, products_df, df_client_products, months):
+    st.header("✅ Minhas Ações")
+    st.caption(f"Sua lista de trabalho priorizada — dados até {months[-1]}. "
+               "Comece pelo topo: são os contatos com mais receita em jogo.")
+
+    work = df.copy()
+
+    # Admin/diretor escolhem a carteira; vendedor já chega filtrado
+    if has_full_data_access():
+        vendors = ["Todas"] + sorted(work['vendor'].unique().tolist())
+        sel_v = st.selectbox("Carteira", vendors, key="act_vendor")
+        if sel_v != "Todas":
+            work = work[work['vendor'] == sel_v]
+
+    # Remove clientes inativados manualmente (página Churn)
+    inactive_ids = load_inactive_clients()
+    work['_cid'] = work['id'].astype(str).str.strip()
+    work = work[~work['_cid'].isin(inactive_ids)].copy()
+
+    if len(work) == 0:
+        st.info("Nenhum cliente na carteira selecionada.")
+        return
+
+    work['valor_anual'] = work['monthly'].apply(annual_value_estimate)
+    work['vendor_short'] = work['vendor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
+
+    # ---- Produtos favoritos por cliente (o que ele sempre comprou) ----
+    fav = {}
+    if len(df_sku) > 0:
+        g = df_sku.groupby(['cod_cliente', 'produto'])['quantidade'].sum().reset_index()
+        g['cod_cliente'] = g['cod_cliente'].astype(str).str.strip()
+        for cid, grp in g.groupby('cod_cliente'):
+            fav[cid] = ', '.join(grp.nlargest(3, 'quantidade')['produto'].tolist())
+
+    # ---- 1. CONTATOS PRIORITÁRIOS (clientes esfriando, por receita em jogo) ----
+    calls = work[(work['risk'].isin(['Recuperação', 'Atenção'])) & (work['status'] == 'Ativo')].copy()
+    calls = calls.sort_values('valor_anual', ascending=False)
+
+    # ---- 2. OFERTAS PRONTAS (produtos Curva A que o cliente ainda não compra) ----
+    offers = []
+    if len(df_client_products) > 0 and len(products_df) > 0:
+        carteira_ids = set(work['_cid'])
+        cp = df_client_products.copy()
+        cp['client_id'] = cp['client_id'].astype(str).str.strip()
+        cp = cp[cp['client_id'].isin(carteira_ids)]
+        n_cart = max(cp['client_id'].nunique(), 1)
+        pen = cp.groupby('product_code')['client_id'].nunique() / n_cart * 100
+        bought_by = cp.groupby('client_id')['product_code'].apply(set).to_dict()
+        prod_a = products_df[products_df['abc'] == 'A']
+
+        # Foca nos 30 clientes ativos mais valiosos da carteira
+        targets = work[work['status'] == 'Ativo'].sort_values('valor_anual', ascending=False).head(30)
+        for _, cl in targets.iterrows():
+            owned = bought_by.get(cl['_cid'], set())
+            if not owned:
+                continue  # sem histórico de produto para cruzar
+            for _, pr in prod_a.iterrows():
+                code = pr['code']
+                if code in owned:
+                    continue
+                p = float(pen.get(code, 0))
+                if p >= 30:
+                    offers.append({
+                        'Cliente': cl['name'],
+                        'Vendedor': cl['vendor_short'],
+                        'Produto Sugerido': pr['name'],
+                        'Categoria': pr['category'],
+                        '% da Carteira que Compra': round(p),
+                        '_valor_cliente': cl['valor_anual'],
+                        '_score': p * max(cl['valor_anual'], 1),
+                    })
+    offers_df = pd.DataFrame(offers)
+    if len(offers_df) > 0:
+        offers_df = offers_df.sort_values('_score', ascending=False)
+
+    # ---- KPIs ----
+    n_urgent = len(calls[calls['risk'] == 'Recuperação'])
+    n_warn = len(calls[calls['risk'] == 'Atenção'])
+    at_stake = calls['valor_anual'].sum()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("🔴 Contatos Urgentes", f"{n_urgent}", "6+ meses sem comprar")
+    k2.metric("🟡 Contatos de Atenção", f"{n_warn}", "3-5 meses sem comprar")
+    k3.metric("💰 Receita em Jogo", fmt_brl(at_stake), "estimativa anual")
+    k4.metric("🎯 Ofertas Identificadas", f"{len(offers_df)}", "produtos Curva A")
+
+    st.divider()
+
+    # ---- SEÇÃO 1: LIGAR / VISITAR ----
+    st.subheader("📞 Quem contatar primeiro")
+    if len(calls) == 0:
+        st.success("Nenhum cliente esfriando na carteira. Foque nas ofertas abaixo!")
+    else:
+        top_calls = calls.head(20).copy()
+        top_calls['Prioridade'] = top_calls['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
+        top_calls['Sempre Comprou'] = top_calls['_cid'].map(fav).fillna('—')
+        disp_calls = top_calls[['Prioridade', 'name', 'vendor_short', 'state', 'last_purchase',
+                                'months_since', 'valor_anual', 'Sempre Comprou']].copy()
+        disp_calls.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra',
+                              'Meses sem Comprar', 'Valor Anual Est.', 'Sempre Comprou']
+        disp_calls['Valor Anual Est.'] = disp_calls['Valor Anual Est.'].apply(fmt_brl_full)
+        st.dataframe(disp_calls, use_container_width=True, hide_index=True,
+                     height=min(500, 35 * len(disp_calls) + 38))
+        if len(calls) > 20:
+            st.caption(f"Mostrando os 20 principais de {len(calls)} clientes esfriando. Baixe a lista completa abaixo.")
+
+        export_calls = calls[['name', 'vendor_short', 'state', 'risk', 'last_purchase',
+                              'months_since', 'valor_anual']].copy()
+        export_calls.columns = ['Cliente', 'Vendedor', 'UF', 'Risco', 'Última Compra',
+                                'Meses sem Comprar', 'Valor Anual Estimado']
+        export_calls['Sempre Comprou'] = calls['_cid'].map(fav).fillna('')
+        _csv_download(export_calls, "⬇️ Baixar lista de contatos (Excel/CSV)",
+                      "contatos_prioritarios.csv", "dl_calls")
+
+    st.divider()
+
+    # ---- SEÇÃO 2: OFERTAS PRONTAS ----
+    st.subheader("🎯 Ofertas prontas para os seus melhores clientes")
+    st.caption("Produtos Curva A (os mais vendidos da Propetz) que pelo menos 30% da carteira compra, "
+               "mas estes clientes ainda não — argumento de venda pronto.")
+    if len(offers_df) == 0:
+        st.info("Nenhuma oferta identificada — clientes principais já compram os produtos Curva A relevantes, "
+                "ou não há dados de produto por cliente na planilha.")
+    else:
+        disp_offers = offers_df[['Cliente', 'Vendedor', 'Produto Sugerido', 'Categoria',
+                                 '% da Carteira que Compra']].head(40)
+        st.dataframe(disp_offers, use_container_width=True, hide_index=True,
+                     height=min(500, 35 * len(disp_offers) + 38))
+        _csv_download(offers_df.drop(columns=['_valor_cliente', '_score']),
+                      "⬇️ Baixar lista de ofertas (Excel/CSV)",
+                      "ofertas_mix.csv", "dl_offers")
 
 # ============================================================
 # PAGE: VISÃO GERAL
@@ -1169,7 +1467,7 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
     # Insight: Churn risk
     at_risk = filtered[filtered['risk'] == 'Recuperação']
     if len(at_risk) > 0:
-        lost = at_risk['avg_month'].apply(lambda am: (am.get('2024', 0) or am.get('2023', 0)) * 12 if isinstance(am, dict) else 0).sum()
+        lost = at_risk['monthly'].apply(annual_value_estimate).sum()
         insights.append(insight_html('danger', 'RISCO DE CHURN',
             f"{len(at_risk)} clientes há 6+ meses sem comprar. Perda anual estimada: {fmt_brl_full(lost)}.",
             "Priorize contato imediato com os maiores tickets."))
@@ -1788,8 +2086,8 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
     atencao = df_active[df_active['risk'] == 'Atenção'].copy()
     saudavel = df_active[df_active['risk'] == 'Saudável']
 
-    recup_impact = recup['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0).sum()
-    atencao_impact = atencao['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0).sum()
+    recup_impact = recup['monthly'].apply(annual_value_estimate).sum()
+    atencao_impact = atencao['monthly'].apply(annual_value_estimate).sum()
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("🔴 Recuperação (6+ meses)", f"{len(recup)}", f"Impacto: {fmt_brl(recup_impact)}/ano")
@@ -1808,7 +2106,7 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             return
 
         data['total_rev'] = data['monthly'].apply(_period_sum)
-        data['impact'] = data['avg_month'].apply(lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0)
+        data['impact'] = data['monthly'].apply(annual_value_estimate)
         data['vendor_short'] = data['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
         data = data.sort_values('total_rev', ascending=False)
 
@@ -1850,9 +2148,7 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             'total': len(g),
             'recuperacao': len(g[g['risk']=='Recuperação']),
             'atencao': len(g[g['risk']=='Atenção']),
-            'impact': g[g['risk'].isin(['Recuperação','Atenção'])]['avg_month'].apply(
-                lambda am: ((am.get('2024',0) or am.get('2023',0)) * 12) if isinstance(am, dict) else 0
-            ).sum()
+            'impact': g[g['risk'].isin(['Recuperação','Atenção'])]['monthly'].apply(annual_value_estimate).sum()
         })).reset_index()
         vendor_risk['vendor_short'] = vendor_risk['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
         vendor_risk['pct_risco'] = ((vendor_risk['recuperacao'] + vendor_risk['atencao']) / vendor_risk['total'] * 100).round(1)
@@ -2053,13 +2349,19 @@ def page_admin():
 
     # Upload new data
     st.subheader("Atualizar Base de Dados")
+    if _gh_token():
+        st.caption("✅ Persistência ativada: a planilha enviada é salva no GitHub e sobrevive a reinícios do servidor.")
+    else:
+        st.warning("⚠️ GITHUB_TOKEN não configurado nos secrets do Streamlit Cloud. "
+                   "O upload vale só até o próximo reinício do servidor — para tornar permanente, "
+                   "salve a planilha na pasta do projeto e rode o deploy.bat, ou configure o token (ver COMO-USAR.md).")
     uploaded = st.file_uploader("Envie a planilha atualizada (.xlsx)", type=['xlsx'])
     if uploaded:
-        save_path = os.path.join(os.path.dirname(__file__), "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx")
-        with open(save_path, 'wb') as f:
-            f.write(uploaded.getbuffer())
-        st.success("Planilha atualizada! Recarregando dados...")
-        st.cache_data.clear()
+        pushed = _handle_planilha_upload(uploaded)
+        if pushed:
+            st.success("Planilha atualizada e salva no GitHub! O app pode reiniciar em ~1 min para aplicar — os dados ficam permanentes.")
+        else:
+            st.success("Planilha atualizada nesta sessão! (Sem token GitHub: será perdida no próximo reinício.)")
         st.rerun()
 
     st.divider()
@@ -2137,6 +2439,9 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
+    # Restaura estado persistido no GitHub (1x por boot do container)
+    _sync_state_from_github()
+
     # Check authentication — try auto-login from URL params first
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
         if not _auto_login_from_params():
@@ -2151,11 +2456,11 @@ def main():
             st.subheader("Upload da planilha")
             uploaded = st.file_uploader("Envie a planilha (.xlsx)", type=['xlsx'])
             if uploaded:
-                save_path = os.path.join(os.path.dirname(__file__), "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx")
-                with open(save_path, 'wb') as f:
-                    f.write(uploaded.getbuffer())
-                st.success("Planilha salva! Recarregando...")
-                st.cache_data.clear()
+                pushed = _handle_planilha_upload(uploaded)
+                if pushed:
+                    st.success("Planilha salva no GitHub! Recarregando...")
+                else:
+                    st.success("Planilha salva nesta sessão! Recarregando...")
                 st.rerun()
         return
 
@@ -2224,6 +2529,7 @@ def main():
 
         # --- Navigation ---
         pages = {
+            "✅ Minhas Ações": "actions",
             "📊 Visão Geral": "overview",
             "👤 Clientes": "clients",
             "🧩 Mix de Produtos": "mix",
@@ -2398,7 +2704,9 @@ def main():
         st.session_state[_page_log_key] = True
         log_page_view(st.session_state.get("username", ""), selected_page)
 
-    if page == "overview":
+    if page == "actions":
+        page_actions(df_clients, df_sku, df_products, df_client_products, months)
+    elif page == "overview":
         page_overview(df_clients, months, year_ranges, sel_indices, sel_indices_sorted, sel_months)
     elif page == "clients":
         page_clients(df_clients, df_sku, months, year_ranges, sel_indices_sorted, sel_months)

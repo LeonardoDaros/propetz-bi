@@ -20,6 +20,30 @@
 3. Clique em **Admin** no menu lateral
 4. Faça upload da planilha atualizada
 
+Com o GITHUB_TOKEN configurado (abaixo), o upload é salvo direto no GitHub e
+**fica permanente** — o app não perde mais os dados quando o servidor reinicia.
+Alternativa: salvar a planilha nesta pasta e rodar o `deploy.bat`.
+
+## GITHUB_TOKEN (persistência — configurar 1 vez)
+
+O disco do Streamlit Cloud é temporário: sem o token, uploads, usuários novos,
+clientes inativados e o log de acessos são perdidos a cada reinício do servidor.
+
+1. Crie um token em https://github.com/settings/tokens → "Generate new token (classic)",
+   marque a permissão **repo**, sem expiração (ou renove quando expirar).
+2. Acesse https://share.streamlit.io → app **propetz-bi** → ⋮ → **Settings** → **Secrets**.
+3. Cole (com as aspas) e salve:
+
+   ```
+   GITHUB_TOKEN = "ghp_seu_token_aqui"
+   ```
+
+4. O app reinicia sozinho. Pronto: estado salvo no branch `state` do repo,
+   planilha salva no branch `main`.
+
+⚠️ Com o token ativo, gerencie usuários/senhas **pelo app** (página Admin), não
+editando o `users.yaml` local — a versão do app tem prioridade no boot.
+
 ## Credenciais
 
 | Usuário    | Senha          | Perfil    |

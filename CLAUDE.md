@@ -1,0 +1,50 @@
+# CLAUDE.md — Propetz BI (Distribuição)
+
+> Última consolidação: 2026-06-10
+
+## O que é este projeto
+
+Dashboard BI do canal **Propetz Distribuição (PD)** em Streamlit, publicado em **https://propetz-bi.streamlit.app** (repo GitHub privado `propetz-bi`, deploy via Streamlit Cloud). Usuários: Leonardo (admin) + vendedores (Cristiane, Emanuel, Yasmin). Dados: 516 clientes, ~297 produtos, set/2021 a fev/2026.
+
+## Arquivos principais
+
+- `app.py` (~2.400 linhas) — aplicação completa em arquivo único. Seções: config/CSS → users (YAML) → rate limit → access log → clientes inativos → auto-login → login → `load_data()`/`process_excel()` → helpers de formatação → páginas.
+- `users.yaml` — usuários e senhas (hash). Credenciais de referência em `COMO-USAR.md`. NÃO commitar/expor.
+- `Relatorio Distribuidores Mensal.xlsx` — planilha-fonte lida por `load_data()`. Atualizada pelo Leonardo via página Admin do app (upload).
+- `Qtd_Comprada_Por_Cliente_RECONSTRUIDA.xlsx` — base SKU×cliente reconstruída (blocos: Produto, SKU, Quantidade, Vendedor, Cliente, Código).
+- `inactive_clients.json`, `access_log.json`, `login_attempts.json` — estado persistido do app.
+
+## Persistência no Streamlit Cloud (não regredir!)
+
+O disco do Streamlit Cloud é efêmero — era a causa do app "cair" todo dia (planilha enviada via Admin sumia a cada restart do container). Arquitetura desde 2026-06-10:
+
+- **Planilha** commitada no repo — o `.gitignore` NÃO pode voltar a ter `*.xlsx`. Upload pela página Admin também commita no branch `main` via API do GitHub.
+- **Estado** (`users.yaml`, `inactive_clients.json`, `access_log.json`) sincronizado com o branch `state` do repo: `_sync_state_from_github()` restaura no boot, `_push_state_file()` envia a cada gravação (em thread, melhor esforço).
+- Requer `GITHUB_TOKEN` (escopo repo) nos secrets do Streamlit Cloud — instruções no `COMO-USAR.md`. Sem token, degrada graciosamente para só-local (sem persistência entre restarts).
+- `deploy.bat` / `setup.bat` — fluxo de deploy em 1 clique (commit + push → Streamlit Cloud atualiza em ~1 min).
+- `AUDIT_REPORT.txt` — auditoria completa de 2026-03-27 (status: PASS).
+
+## Páginas do app
+
+`page_actions` (tela inicial: contatos prioritários por receita em jogo + ofertas de mix Curva A, com export CSV), `page_overview` (KPIs, receita mensal/anual, cobertura e receita por vendedor), `page_clients` (tabela de clientes, painel de detalhe, tendência, dias sem compra), `page_mix` (curva ABC 80/15/5, top produtos, variedade por cliente), `page_churn` (classificação automática), `page_products` (catálogo com curva ABC), `page_admin` (upload de planilha, gestão de usuários).
+
+Impacto financeiro de churn/risco usa `annual_value_estimate()` (ticket médio dos últimos 12 meses × 12) — não reintroduzir cálculos com anos fixos ('2024'/'2023').
+
+## Lógica de negócio (não alterar sem confirmar)
+
+- **Churn:** Recuperação = 6+ meses sem compra | Atenção = 3-5 meses | Saudável = ≤3 meses.
+- **Curva ABC:** A = 80% da receita, B = 15%, C = 5%.
+- **`normalize_vendor()`** — unificação de carteiras de vendedores (mapeamento no topo da função `load_data`). Ao mudar vendedor de carteira, atualizar aqui.
+- **`has_full_data_access()`** — vendedores veem dados restritos; admin vê tudo. Preservar essa separação em qualquer página nova.
+
+## Regras de trabalho
+
+1. **Nunca quebrar autenticação** — login, rate limit e access log são requisitos. Testar login após qualquer mudança estrutural.
+2. **Dados sensíveis** — receita por cliente/vendedor. Repo é privado; nunca colocar dados ou senhas em código.
+3. **Deploy** — alterações só entram no ar após Leonardo rodar `deploy.bat`. Avisar quando uma mudança exigir deploy.
+4. **Interface em pt-BR**, valores em R$ (`fmt_brl`), identidade visual Propetz (teal/azul).
+5. **Mudança em `process_excel()`** exige validar contra a planilha real — estrutura de blocos da planilha SKU é frágil.
+
+## Contexto de negócio
+
+ProPetz (Grupo Daros) vende equipamentos profissionais de grooming PET. Este dashboard cobre o canal Distribuição (B2B para pet shops/distribuidores) — distinto do dashboard de demanda/estoque (pasta `Demanda Curva abc`, canais PD/PV/VE/NR). Objetivo central: dar visibilidade de churn e mix por cliente para o time comercial agir.

@@ -923,6 +923,50 @@ def fmt_brl(v):
 def fmt_brl_full(v):
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+def _year_of_label(lbl):
+    """Extrai o ano (ex: '2025') de um rótulo de mês tipo 'jan/25'."""
+    parts = str(lbl).replace('-', '/').split('/')
+    y = parts[-1].strip() if len(parts) >= 2 else ''
+    return f"20{y}" if len(y) == 2 else y
+
+def compute_preset_indices(preset, months):
+    """Converte um preset de período ('Últimos 12 meses' etc.) no set de
+    índices correspondentes da lista de meses."""
+    n = len(months)
+    years = []
+    for lbl in months:
+        y = _year_of_label(lbl)
+        if y and y not in years:
+            years.append(y)
+    cur = years[-1] if years else ''
+    prev = years[-2] if len(years) >= 2 else ''
+
+    if preset == "Este mês":
+        return set([n - 1]) if n else set()
+    if preset == "Últimos 3 meses":
+        return set(range(max(0, n - 3), n))
+    if preset == "Últimos 6 meses":
+        return set(range(max(0, n - 6), n))
+    if preset == "Últimos 12 meses":
+        return set(range(max(0, n - 12), n))
+    if preset.startswith("Este ano") and cur:
+        return {i for i, lbl in enumerate(months) if _year_of_label(lbl) == cur}
+    if preset.startswith("Ano passado") and prev:
+        return {i for i, lbl in enumerate(months) if _year_of_label(lbl) == prev}
+    return set(range(n))  # "Tudo" (desde o início)
+
+def show_money_table(df_disp, money_cols, **kwargs):
+    """Tabela com colunas em R$ formatadas SEM virar texto — assim a ordenação
+    por clique no cabeçalho continua numérica (e não alfabética)."""
+    fmt_map = {c: fmt_brl_full for c in money_cols if c in df_disp.columns}
+    try:
+        st.dataframe(df_disp.style.format(fmt_map), **kwargs)
+    except Exception:
+        d = df_disp.copy()
+        for c in fmt_map:
+            d[c] = d[c].apply(fmt_brl_full)
+        st.dataframe(d, **kwargs)
+
 def annual_value_estimate(monthly):
     """Valor anual estimado do cliente: ticket médio dos meses COM compra
     nos últimos 12 meses × 12. Se não comprou nos últimos 12 meses, usa o
@@ -1068,9 +1112,8 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
                                 'months_since', 'valor_anual', 'Sempre Comprou']].copy()
         disp_calls.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra',
                               'Meses sem Comprar', 'Valor Anual Est.', 'Sempre Comprou']
-        disp_calls['Valor Anual Est.'] = disp_calls['Valor Anual Est.'].apply(fmt_brl_full)
-        st.dataframe(disp_calls, use_container_width=True, hide_index=True,
-                     height=min(500, 35 * len(disp_calls) + 38))
+        show_money_table(disp_calls, ['Valor Anual Est.'], use_container_width=True, hide_index=True,
+                         height=min(500, 35 * len(disp_calls) + 38))
         if len(calls) > 20:
             st.caption(f"Mostrando os 20 principais de {len(calls)} clientes esfriando. Baixe a lista completa abaixo.")
 
@@ -1181,6 +1224,13 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
               f"{retained} de {len(bought_prev)} retidos")
     k4.metric("Base Ativa", f"{n_active}", f"Inativos: {n_inactive} | Risco: {n_risk}")
     k5.metric("Ticket Médio/Mês", fmt_brl(avg_ticket), f"{period_buyers} comprando no período")
+
+    st.divider()
+
+    # Insights aparecem AQUI no topo; o conteúdo é calculado ao longo da
+    # página e renderizado neste container no final.
+    st.subheader("🧠 Insights Automáticos")
+    insights_box = st.container()
 
     st.divider()
 
@@ -1449,10 +1499,9 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
         dormant_display = dormant[['name', 'vendor', 'state', 'total_hist']].copy()
         dormant_display.columns = ['Cliente', 'Vendedor', 'UF', 'Receita Histórica']
         dormant_display['Vendedor'] = dormant_display['Vendedor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
-        dormant_display['Receita Histórica'] = dormant_display['Receita Histórica'].apply(fmt_brl_full)
         dormant_display = dormant_display.reset_index(drop=True)
         dormant_display.index = dormant_display.index + 1
-        st.dataframe(dormant_display, use_container_width=True, height=min(400, 35 * len(dormant_display) + 38))
+        show_money_table(dormant_display, ['Receita Histórica'], use_container_width=True, height=min(400, 35 * len(dormant_display) + 38))
         total_dormant_rev = dormant['total_hist'].sum()
         st.caption(f"Estes {len(dormant)} clientes já geraram {fmt_brl_full(total_dormant_rev)} em receita total. Uma ligação pode reativá-los.")
     else:
@@ -1460,8 +1509,7 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
 
     st.divider()
 
-    # --- INSIGHTS AUTOMÁTICOS ---
-    st.subheader("🧠 Insights Automáticos")
+    # --- INSIGHTS AUTOMÁTICOS (renderizados no insights_box, no topo) ---
     insights = []
 
     # Insight: Churn risk
@@ -1527,11 +1575,11 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
                 f"Vendedor(es) com menos de 30% dos clientes comprando: {names}.",
                 "Revisar: carteira grande demais? Clientes desatualizados? Falta de follow-up?"))
 
-    for ins in insights:
-        st.markdown(ins, unsafe_allow_html=True)
-
-    if not insights:
-        st.info("Nenhum insight crítico para o período selecionado. Operação estável.")
+    with insights_box:
+        for ins in insights:
+            st.markdown(ins, unsafe_allow_html=True)
+        if not insights:
+            st.info("Nenhum insight crítico para o período selecionado. Operação estável.")
 
 # ============================================================
 # PAGE: CLIENTES
@@ -1572,9 +1620,8 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
     rev_col = f'Receita ({period_label})'
     display_df.columns = ['Cliente','UF','Vendedor','Status','Risco',rev_col,'Última Compra']
     display_df['Vendedor'] = display_df['Vendedor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
-    display_df[rev_col] = display_df[rev_col].apply(fmt_brl_full)
 
-    st.dataframe(display_df, use_container_width=True, height=300, hide_index=True)
+    show_money_table(display_df, [rev_col], use_container_width=True, height=300, hide_index=True)
 
     st.divider()
 
@@ -1729,6 +1776,10 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
 def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_sorted, sel_months):
     st.header("🧩 Oportunidades de Mix de Produtos")
 
+    # Quantos meses os dados de SKU cobrem — denominador correto para
+    # transformar quantidades totais em médias mensais
+    sku_months_cov = max(df_sku['mes'].nunique(), 1) if len(df_sku) > 0 else max(len(months), 1)
+
     def _period_sum(m):
         return sum(m[i] for i in sel_indices_sorted if i < len(m))
 
@@ -1853,9 +1904,11 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                         return '⚪ Potencial Baixo'
                 underperforming['severidade'] = underperforming.apply(severity, axis=1)
 
-                # Calcular qtd potencial de compra mensal baseado na amostragem do mercado
+                # Qtd potencial/mês = quanto o cliente compraria do produto se o
+                # mix dele seguisse o mix do mercado, distribuído pelos meses
+                # que a base de SKU realmente cobre (não pelo filtro de período)
                 total_client_qty = cp_potential['total_qty'].sum()
-                n_months_data = max(len(sel_indices_sorted), 1)
+                n_months_data = sku_months_cov
                 for idx_r in underperforming.index:
                     mkt_share = underperforming.loc[idx_r, 'market_share_pct'] / 100
                     current_qty = underperforming.loc[idx_r, 'total_qty']
@@ -1917,21 +1970,29 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
             f"🔴 Curva C ({len(nb_c)})"
         ])
 
-        # Calcular qtd potencial mensal baseado no % de mercado do produto * volume médio do cliente
-        _client_monthly_avg = total / max(months_active, 1) if months_active > 0 else 0
+        # Referência defensável de venda: entre os clientes que COMPRAM o produto,
+        # quanto um comprador típico (mediana) leva por mês em que compra
+        _typical_monthly = {}
+        _buyers_count = {}
+        if len(df_sku) > 0:
+            _per_buyer = df_sku.groupby(['sku', 'cod_cliente']).agg(
+                _q=('quantidade', 'sum'), _m=('mes', 'nunique')).reset_index()
+            _per_buyer['_per_month'] = _per_buyer['_q'] / _per_buyer['_m'].clip(lower=1)
+            _typical_monthly = _per_buyer.groupby('sku')['_per_month'].median().round(1).to_dict()
+            _buyers_count = _per_buyer.groupby('sku')['cod_cliente'].nunique().to_dict()
 
         def show_never_bought(df_nb, tab):
             with tab:
                 if len(df_nb) == 0:
                     st.success("Cliente já compra todos os produtos desta curva!")
                     return
+                st.caption("**Qtd Típica/Mês** = mediana do que um comprador deste produto leva por mês em que compra — use como sugestão de pedido inicial.")
                 disp = df_nb[['code','name','category','total_qty']].copy()
-                # Calcular potencial mensal: % mercado do produto * volume total do mercado / 14 meses
-                disp['Qtd Potencial/Mês'] = (disp['total_qty'] / max(total_qty_all, 1) * disp['total_qty'] / 14).round(1)
-                # Usar média dos compradores deste produto como referência
                 disp['% Mercado'] = (disp['total_qty'] / max(total_qty_all, 1) * 100).round(2)
+                disp['Clientes que Compram'] = disp['code'].map(_buyers_count).fillna(0).astype(int)
+                disp['Qtd Típica/Mês'] = disp['code'].map(_typical_monthly)
                 disp = disp.drop(columns=['total_qty'])
-                disp.columns = ['Código','Produto','Categoria','Qtd Potencial/Mês','% Mercado']
+                disp.columns = ['Código','Produto','Categoria','% Mercado','Clientes que Compram','Qtd Típica/Mês']
                 st.dataframe(disp, use_container_width=True, hide_index=True, height=min(400, 35 * len(disp) + 38))
 
         show_never_bought(nb_a, tab_a)
@@ -1984,8 +2045,9 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                 # Gap percentage
                 gap_pct = ((top25_qty - avg_all) / top25_qty * 100) if top25_qty > 0 else 0
                 
-                # Potential extra per month (assuming 14 days = 2 weeks working period per month)
-                potencial_extra_mensal = (top25_qty - avg_all) * num_clientes / 14
+                # Potencial extra/mês: se todos os compradores chegassem ao nível
+                # do top 25%, distribuído pelos meses cobertos pela base de SKU
+                potencial_extra_mensal = (top25_qty - avg_all) * num_clientes / sku_months_cov
                 
                 gap_data.append({
                     'Produto': prod_name,
@@ -2043,8 +2105,9 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                     pct_buyers = (buyers / len(same_vendor_clients)) * 100 if len(same_vendor_clients) > 0 else 0
                     
                     if pct_buyers >= 30:
-                        # Average quantity from similar buyers
-                        avg_qty = vendor_products[vendor_products['sku'] == sku_code]['quantidade'].mean()
+                        # Cada linha do SKU já é "qtd num mês de compra de um cliente":
+                        # a mediana dessas linhas É a referência mensal típica
+                        avg_qty = vendor_products[vendor_products['sku'] == sku_code]['quantidade'].median()
                         prod_name = vendor_products[vendor_products['sku'] == sku_code]['produto'].iloc[0]
                         vendedor = vendor_products[vendor_products['sku'] == sku_code]['vendedor'].iloc[0]
                         
@@ -2054,7 +2117,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
                             'Produto': prod_name,
                             'SKU': sku_code,
                             '% Clientes Similares': round(pct_buyers, 1),
-                            'Qtd Potencial/Mês': round(avg_qty / 4, 1)  # Approx monthly
+                            'Qtd Potencial/Mês': round(avg_qty, 1)
                         })
             
             if opp_data:
@@ -2133,9 +2196,8 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
         display = data[['name','state','vendor_short','last_purchase','months_since','impact','total_rev']].copy()
         display.columns = ['Cliente','UF','Vendedor','Última Compra','Meses Inativo','Impacto Anual Est.',f'Receita ({period_label})']
-        display['Impacto Anual Est.'] = display['Impacto Anual Est.'].apply(fmt_brl_full)
-        display[f'Receita ({period_label})'] = display[f'Receita ({period_label})'].apply(fmt_brl_full)
-        st.dataframe(display, use_container_width=True, hide_index=True, height=500)
+        show_money_table(display, ['Impacto Anual Est.', f'Receita ({period_label})'],
+                         use_container_width=True, hide_index=True, height=500)
 
     with tab1:
         _render_churn_table(recup, "recup")
@@ -2200,8 +2262,8 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
             display_inact = df_inactive_sorted[['name','state','vendor_short','risk','last_purchase','months_since','total_rev']].copy()
             display_inact.columns = ['Cliente','UF','Vendedor','Risco Original','Última Compra','Meses Inativo',f'Receita ({period_label})']
-            display_inact[f'Receita ({period_label})'] = display_inact[f'Receita ({period_label})'].apply(fmt_brl_full)
-            st.dataframe(display_inact, use_container_width=True, hide_index=True, height=500)
+            show_money_table(display_inact, [f'Receita ({period_label})'],
+                             use_container_width=True, hide_index=True, height=500)
 
 # ============================================================
 # PAGE: PRODUTOS
@@ -2555,21 +2617,35 @@ def main():
                 del st.session_state["chart_sel_months"]
                 st.rerun()
 
-        # Year pills (compact multiselect)
-        selected_years = st.multiselect(
-            "Ano",
-            options=all_years_ordered,
-            default=[_best_default_year] if _best_default_year else [],
-            key="global_years"
-        )
+        # Seletor único com presets (substitui os multiselects de ano + mês)
+        _cur_year = all_years_ordered[-1] if all_years_ordered else ""
+        _prev_year = all_years_ordered[-2] if len(all_years_ordered) >= 2 else ""
+        preset_options = ["Últimos 12 meses"]
+        if _cur_year:
+            preset_options.append(f"Este ano ({_cur_year})")
+        preset_options += ["Últimos 6 meses", "Últimos 3 meses", "Este mês"]
+        if _prev_year:
+            preset_options.append(f"Ano passado ({_prev_year})")
+        preset_options += ["Tudo (desde o início)", "Personalizado…"]
 
-        # Month pills as numbers 1-12 (compact multiselect)
-        selected_month_nums = st.multiselect(
-            "Mês",
-            options=_existing_month_nums,
-            default=_existing_month_nums,
-            key="global_months"
-        )
+        sel_preset = st.selectbox("Período", preset_options, key="global_preset",
+                                  label_visibility="collapsed")
+
+        # Modo avançado: escolher anos e meses manualmente
+        selected_years, selected_month_nums = [], []
+        if sel_preset == "Personalizado…":
+            selected_years = st.multiselect(
+                "Ano",
+                options=all_years_ordered,
+                default=[_best_default_year] if _best_default_year else [],
+                key="global_years"
+            )
+            selected_month_nums = st.multiselect(
+                "Mês (1-12)",
+                options=_existing_month_nums,
+                default=_existing_month_nums,
+                key="global_months"
+            )
 
         # --- Compact CSS to reduce multiselect pill size ---
         st.markdown("""
@@ -2651,12 +2727,10 @@ def main():
         for lbl in st.session_state["chart_sel_months"]:
             if lbl in months:
                 sel_indices.add(months.index(lbl))
+    elif sel_preset != "Personalizado…":
+        sel_indices = compute_preset_indices(sel_preset, months)
     else:
-        # Match months by year + month number
-        _num_to_names = {}
-        for k, v in MONTH_NAME_TO_NUM.items():
-            _num_to_names.setdefault(v, []).append(k)
-
+        # Personalizado: match months by year + month number
         sel_indices = set()
         for i, lbl in enumerate(months):
             parts = lbl.replace('-', '/').split('/')
@@ -2666,7 +2740,6 @@ def main():
                 y_full = f"20{y_raw}" if len(y_raw) == 2 else y_raw
                 m_num = MONTH_NAME_TO_NUM.get(m_name, "")
             else:
-                m_name = lbl.lower()
                 y_full = ""
                 m_num = ""
             if y_full in selected_years and m_num in selected_month_nums:

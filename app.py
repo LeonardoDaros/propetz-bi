@@ -576,6 +576,52 @@ def _handle_planilha_upload(uploaded):
     st.cache_data.clear()
     return pushed
 
+# ============================================================
+# CURVA ABC POR VALOR — abc_valor.json traz o faturamento por SKU do canal
+# Distribuição (últimos 12 meses, extraído da Base Mãe pelo script
+# atualizar_abc_valor.py, que o deploy.bat roda automaticamente).
+# ============================================================
+ABC_VALOR_FILE = os.path.join(os.path.dirname(__file__), "abc_valor.json")
+
+def load_abc_valor():
+    """Retorna o dict do abc_valor.json ou None se não existir/estiver inválido."""
+    if os.path.exists(ABC_VALOR_FILE):
+        try:
+            with open(ABC_VALOR_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if data.get("faturamento"):
+                return data
+        except Exception:
+            pass
+    return None
+
+def apply_abc_by_value(products):
+    """Recalcula a curva ABC dos produtos por FATURAMENTO (Pareto: A = 80%
+    acumulado, B = até 95%, C = resto). Produtos sem venda no período = C.
+    Se o abc_valor.json não existir, mantém a curva original da planilha."""
+    abc_data = load_abc_valor()
+    if not abc_data:
+        for p in products:
+            p['valor_12m'] = 0
+        return products
+    fat = abc_data["faturamento"]
+    for p in products:
+        try:
+            p['valor_12m'] = float(fat.get(p['code'], 0))
+        except Exception:
+            p['valor_12m'] = 0
+    total_val = sum(p['valor_12m'] for p in products)
+    if total_val <= 0:
+        return products
+    cum = 0
+    for p in sorted(products, key=lambda x: -x['valor_12m']):
+        if p['valor_12m'] <= 0:
+            p['abc'] = 'C'
+            continue
+        cum += p['valor_12m']
+        p['abc'] = 'A' if cum <= 0.80 * total_val else ('B' if cum <= 0.95 * total_val else 'C')
+    return products
+
 # Mapeamento de vendedores (unificação de carteiras)
 VENDOR_MERGE = {
     "Ellen Propetz Distribuição": "Emanuel Propetz Distribuição",
@@ -729,6 +775,8 @@ def process_excel(xlsx_path):
                 'abc': str(abc).strip() if abc else 'C'
             })
         products.sort(key=lambda x: -x['total_qty'])
+        # Curva por VALOR substitui a curva por quantidade vinda da planilha
+        products = apply_abc_by_value(products)
 
     # ---- CLIENT × PRODUCT DATA (Base de DadosProdutos, RIGHT SIDE cols 31+) ----
     client_products = []
@@ -1129,7 +1177,7 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
 
     # ---- SEÇÃO 2: OFERTAS PRONTAS ----
     st.subheader("🎯 Ofertas prontas para os seus melhores clientes")
-    st.caption("Produtos Curva A (os mais vendidos da Propetz) que pelo menos 30% da carteira compra, "
+    st.caption("Produtos Curva A (os que mais faturam no canal Distribuição) que pelo menos 30% da carteira compra, "
                "mas estes clientes ainda não — argumento de venda pronto.")
     if len(offers_df) == 0:
         st.info("Nenhuma oferta identificada — clientes principais já compram os produtos Curva A relevantes, "
@@ -1780,6 +1828,10 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     # transformar quantidades totais em médias mensais
     sku_months_cov = max(df_sku['mes'].nunique(), 1) if len(df_sku) > 0 else max(len(months), 1)
 
+    _abc_meta = load_abc_valor()
+    if _abc_meta:
+        st.caption(f"Curvas A/B/C por **faturamento** do canal Distribuição ({_abc_meta.get('periodo', 'últimos 12 meses')}) — Curva A = produtos que geram 80% da receita.")
+
     def _period_sum(m):
         return sum(m[i] for i in sel_indices_sorted if i < len(m))
 
@@ -2273,27 +2325,45 @@ def page_products(products_df):
 
     is_admin = has_full_data_access()
 
+    # Critério da curva: faturamento (abc_valor.json) ou quantidade (fallback)
+    abc_meta = load_abc_valor()
+    has_val = abc_meta is not None and 'valor_12m' in products_df.columns and products_df['valor_12m'].sum() > 0
+    if has_val:
+        st.caption(f"Curva ABC calculada por **faturamento** do canal Distribuição — "
+                   f"{abc_meta.get('periodo', 'últimos 12 meses')} (Base Mãe, atualizado em "
+                   f"{abc_meta.get('gerado_em', '—')}). A = 80% do faturamento acumulado, B = 15%, C = 5%. "
+                   f"Produtos sem venda no período ficam na curva C.")
+        abc_base = products_df['valor_12m']
+        base_label = "do faturamento"
+    else:
+        st.caption("Curva ABC por quantidade (planilha). Gere o abc_valor.json para usar faturamento.")
+        abc_base = products_df['total_qty']
+        base_label = "do volume"
+
     count_a = len(products_df[products_df['abc']=='A'])
     count_b = len(products_df[products_df['abc']=='B'])
     count_c = len(products_df[products_df['abc']=='C'])
     total_qty = products_df['total_qty'].sum()
-    qty_a = products_df[products_df['abc']=='A']['total_qty'].sum()
-    pct_a = qty_a / total_qty * 100 if total_qty > 0 else 0
-    pct_b = products_df[products_df['abc']=='B']['total_qty'].sum() / total_qty * 100 if total_qty > 0 else 0
-    pct_c = products_df[products_df['abc']=='C']['total_qty'].sum() / total_qty * 100 if total_qty > 0 else 0
+    total_base = abc_base.sum()
+    pct_a = abc_base[products_df['abc']=='A'].sum() / total_base * 100 if total_base > 0 else 0
+    pct_b = abc_base[products_df['abc']=='B'].sum() / total_base * 100 if total_base > 0 else 0
+    pct_c = abc_base[products_df['abc']=='C'].sum() / total_base * 100 if total_base > 0 else 0
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Produtos", f"{len(products_df)}")
-    k2.metric("Curva A", f"{count_a}", f"{pct_a:.1f}% do volume")
-    k3.metric("Curva B", f"{count_b}", f"{pct_b:.1f}% do volume")
-    k4.metric("Curva C", f"{count_c}", f"{pct_c:.1f}% do volume")
+    k2.metric("Curva A", f"{count_a}", f"{pct_a:.1f}% {base_label}")
+    k3.metric("Curva B", f"{count_b}", f"{pct_b:.1f}% {base_label}")
+    k4.metric("Curva C", f"{count_c}", f"{pct_c:.1f}% {base_label}")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        abc_data = products_df.groupby('abc')['total_qty'].sum().reset_index()
+        _df_abc = products_df.copy()
+        _df_abc['_base'] = abc_base
+        abc_data = _df_abc.groupby('abc')['_base'].sum().reset_index().rename(columns={'_base': 'total_qty'})
         abc_data['pct'] = (abc_data['total_qty'] / abc_data['total_qty'].sum() * 100).round(1)
-        fig_abc = px.pie(abc_data, values='total_qty', names='abc', title="Curva ABC - Distribuição %",
+        fig_abc = px.pie(abc_data, values='total_qty', names='abc',
+                        title=f"Curva ABC - % {base_label.replace('do ', '')}",
                         color='abc', color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'})
         fig_abc.update_traces(textinfo='label+percent', hovertemplate='Curva %{label}: %{percent}<extra></extra>')
         fig_abc.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff', height=400)
@@ -2323,7 +2393,10 @@ def page_products(products_df):
     search = st.text_input("🔍 Buscar produto", key="prod_search")
 
     if is_admin:
-        display = products_df[['code','name','category','abc','total_qty']].copy()
+        cols = ['code','name','category','abc','total_qty'] + (['valor_12m'] if has_val else [])
+        display = products_df[cols].copy()
+        if has_val:
+            display = display.sort_values('valor_12m', ascending=False)
     else:
         # Vendor view: show % instead of raw quantities
         display = products_df[['code','name','category','abc','total_qty']].copy()
@@ -2339,10 +2412,11 @@ def page_products(products_df):
         ]
 
     if is_admin:
-        display.columns = ['Código','Produto','Categoria','Curva','Volume Total']
+        display.columns = ['Código','Produto','Categoria','Curva','Volume Total'] + (['Faturamento 12m'] if has_val else [])
+        show_money_table(display, ['Faturamento 12m'], use_container_width=True, hide_index=True, height=500)
     else:
         display.columns = ['Código','Produto','Categoria','Curva','% do Volume']
-    st.dataframe(display, use_container_width=True, hide_index=True, height=500)
+        st.dataframe(display, use_container_width=True, hide_index=True, height=500)
 
 # ============================================================
 # PAGE: ADMIN

@@ -33,7 +33,7 @@ Impacto financeiro de churn/risco usa `annual_value_estimate()` (ticket médio d
 ## Lógica de negócio (não alterar sem confirmar)
 
 - **Churn:** Recuperação = 6+ meses sem compra | Atenção = 3-5 meses | Saudável = ≤3 meses.
-- **Curva ABC:** A = 80% da receita, B = 15%, C = 5%.
+- **Curva ABC:** A = 80% da receita, B = 15%, C = 5%. Desde 2026-06-10 calculada pelo APP (`apply_abc_by_value`) por **faturamento** do canal Distribuição (últimos 12m), via `abc_valor.json` — gerado da Base Mãe pelo `atualizar_abc_valor.py` (o `deploy.bat` roda automaticamente). A coluna "Curva ABC QTD." da planilha NÃO é mais usada (regra dela era share individual por quantidade — errada; classificava a PRO X Preta, 3º produto em faturamento, como B). Produtos sem venda no período = C.
 - **`normalize_vendor()`** — unificação de carteiras de vendedores (mapeamento no topo da função `load_data`). Ao mudar vendedor de carteira, atualizar aqui.
 - **`has_full_data_access()`** — vendedores veem dados restritos; admin vê tudo. Preservar essa separação em qualquer página nova.
 

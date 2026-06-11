@@ -174,7 +174,8 @@ def save_users(users_data):
 
 def verify_login(username, password):
     users = load_users()
-    user = users["users"].get(username)
+    # Normaliza: celular capitaliza a 1ª letra e pode incluir espaço no autocomplete
+    user = users["users"].get(str(username).strip().lower())
     if user and user["password"] == hash_password(password):
         return user
     return None
@@ -514,10 +515,16 @@ def login_page():
     st.markdown('<div class="login-title">Propetz BI</div>', unsafe_allow_html=True)
     st.markdown('<div class="login-sub">Dashboard Comercial</div>', unsafe_allow_html=True)
 
-    username = st.text_input("Usuário", key="login_user")
-    password = st.text_input("Senha", type="password", key="login_pass")
+    # st.form: digitar + clicar Entrar (ou pressionar Enter) vira UMA ação só.
+    # Sem o form, o 1º clique apenas confirmava o campo de senha e o usuário
+    # achava que o login não funcionava.
+    with st.form("login_form"):
+        username = st.text_input("Usuário", key="login_user")
+        password = st.text_input("Senha", type="password", key="login_pass")
+        submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
 
-    if st.button("Entrar", use_container_width=True, type="primary"):
+    if submitted:
+        username = str(username).strip().lower()
         if not username or not password:
             st.error("Preencha usuário e senha.")
         else:

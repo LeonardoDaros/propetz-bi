@@ -315,6 +315,48 @@ def save_inactive_clients(inactive_set):
     return None
 
 # ============================================================
+# SOLICITAÇÕES DE INATIVAÇÃO (vendedor solicita → admin aprova)
+# ============================================================
+INACTIVE_REQUESTS_FILE = os.path.join(os.path.dirname(__file__), "inactive_requests.json")
+
+def load_inactive_requests():
+    """Lista de solicitações de inativação (pendentes e decididas)."""
+    if os.path.exists(INACTIVE_REQUESTS_FILE):
+        try:
+            with open(INACTIVE_REQUESTS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f).get("requests", [])
+        except Exception:
+            return []
+    return []
+
+def save_inactive_requests(reqs):
+    with open(INACTIVE_REQUESTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"requests": reqs[-500:]}, f, ensure_ascii=False, indent=1)
+    _push_state_file("inactive_requests.json")
+
+def add_inactivation_request(client_id, client_name, vendor):
+    """Registra uma solicitação pendente. Retorna False se já existe pendente."""
+    reqs = load_inactive_requests()
+    cid = str(client_id).strip()
+    for r in reqs:
+        if r.get("client_id") == cid and r.get("status") == "pendente":
+            return False
+    reqs.append({
+        "client_id": cid,
+        "client_name": str(client_name),
+        "vendor": str(vendor or ""),
+        "requested_by": st.session_state.get("username", ""),
+        "requested_by_name": st.session_state.get("user_name", ""),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "status": "pendente",
+    })
+    save_inactive_requests(reqs)
+    return True
+
+def pending_inactivation_requests():
+    return [r for r in load_inactive_requests() if r.get("status") == "pendente"]
+
+# ============================================================
 # PERSISTÊNCIA REMOTA (GitHub) — o disco do Streamlit Cloud é
 # temporário: tudo que não está no repositório some quando o
 # container reinicia. Arquivos de ESTADO (usuários, inativados,
@@ -326,7 +368,7 @@ def save_inactive_clients(inactive_set):
 _GH_API = "https://api.github.com"
 _GH_REPO = "LeonardoDaros/propetz-bi"
 _GH_STATE_BRANCH = "state"
-_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json"]
+_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json"]
 
 def _gh_token():
     try:
@@ -1088,6 +1130,11 @@ def page_manager(df, months, df_sku, products_df):
     st.header("🎛️ Painel do Gestor")
     st.caption(f"Acompanhamento objetivo do canal Distribuição — dados até **{months[-1]}**.")
 
+    _n_pend = len(pending_inactivation_requests())
+    if _n_pend > 0:
+        st.warning(f"📋 **{_n_pend} solicitação(ões) de inativação** aguardando sua aprovação — "
+                   f"veja a seção *Solicitações de Inativação* abaixo.")
+
     n = len(months)
     monthly_tot = [df['monthly'].apply(lambda m: m[i] if i < len(m) else 0).sum() for i in range(n)]
 
@@ -1174,7 +1221,66 @@ def page_manager(df, months, df_sku, products_df):
 
     st.divider()
 
-    # ---- LINHA 4: O TIME ESTÁ USANDO O BI? ----
+    # ---- LINHA 4: SOLICITAÇÕES DE INATIVAÇÃO (aprovar/rejeitar) ----
+    st.subheader("📋 Solicitações de Inativação")
+    reqs = load_inactive_requests()
+    pend = [r for r in reqs if r.get('status') == 'pendente']
+    if not pend:
+        st.caption("Nenhuma solicitação pendente.")
+    else:
+        st.caption("Aprovando, o cliente sai das listas de ação e churn de todo o time. "
+                   "Rejeitando, ele continua como está.")
+        for idx, r in enumerate(pend):
+            c1, c2, c3 = st.columns([6, 1.2, 1.2])
+            _vend_short = r.get('vendor', '').replace(' Propetz Distribuição', '').replace(' La Maison Propetz', '')
+            c1.markdown(f"**{r['client_name']}** ({_vend_short}) — solicitado por "
+                        f"*{r.get('requested_by_name', '?')}* em {r.get('date', '')}")
+            if c2.button("✅ Aprovar", key=f"apr_{r['client_id']}_{idx}"):
+                inact = load_inactive_clients()
+                inact.add(r['client_id'])
+                save_inactive_clients(inact)
+                r['status'] = 'aprovado'
+                r['decidido_em'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                save_inactive_requests(reqs)
+                st.rerun()
+            if c3.button("❌ Rejeitar", key=f"rej_{r['client_id']}_{idx}"):
+                r['status'] = 'rejeitado'
+                r['decidido_em'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+                save_inactive_requests(reqs)
+                st.rerun()
+
+    # Histórico curto das últimas decisões
+    decided = [r for r in reversed(reqs) if r.get('status') in ('aprovado', 'rejeitado')][:10]
+    if decided:
+        with st.expander(f"Últimas decisões ({len(decided)})"):
+            for r in decided:
+                _icon = '✅' if r['status'] == 'aprovado' else '❌'
+                st.markdown(f"{_icon} **{r['client_name']}** — {r['status']} em {r.get('decidido_em', '')} "
+                            f"(solicitado por {r.get('requested_by_name', '?')})")
+
+    # Reativação de clientes inativados
+    inact_ids = load_inactive_clients()
+    _df_inact = df[df['id'].astype(str).str.strip().isin(inact_ids)]
+    with st.expander(f"♻️ Clientes inativados ({len(inact_ids)}) — reativar"):
+        if len(_df_inact) == 0:
+            st.caption("Nenhum cliente inativado.")
+        else:
+            sel_react = st.multiselect("Selecione para reativar:",
+                                       sorted(_df_inact['name'].tolist()), key="mgr_react")
+            if sel_react:
+                if st.button(f"♻️ Reativar {len(sel_react)} cliente(s)", key="btn_mgr_react", type="primary"):
+                    new_inact = set(inact_ids)
+                    for nm in sel_react:
+                        m = _df_inact[_df_inact['name'] == nm]
+                        if len(m) > 0:
+                            new_inact.discard(str(m.iloc[0]['id']).strip())
+                    save_inactive_clients(new_inact)
+                    st.success(f"{len(sel_react)} cliente(s) reativado(s).")
+                    st.rerun()
+
+    st.divider()
+
+    # ---- LINHA 5: O TIME ESTÁ USANDO O BI? ----
     st.subheader("📡 Uso do BI pelo Time (últimos 14 dias)")
     access_log = _load_access_log()
     if not access_log:
@@ -1326,6 +1432,28 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         export_calls['Sempre Comprou'] = calls['_cid'].map(fav).fillna('')
         _csv_download(export_calls, "⬇️ Baixar lista de contatos (Excel/CSV)",
                       "contatos_prioritarios.csv", "dl_calls")
+
+    # ---- SOLICITAR INATIVAÇÃO (vendedor pede, admin aprova) ----
+    if not has_full_data_access():
+        with st.expander("🚫 Cliente fechou ou não existe mais? Solicite a inativação"):
+            st.caption("A solicitação vai para aprovação do administrador. Enquanto não for aprovada, "
+                       "o cliente continua nas listas.")
+            _pend = pending_inactivation_requests()
+            _pend_ids = {r['client_id'] for r in _pend}
+            _opts = work[~work['_cid'].isin(_pend_ids)].sort_values('name')['name'].tolist()
+            sel_inact = st.multiselect("Clientes para inativar:", _opts, key="req_inact")
+            if sel_inact:
+                if st.button(f"📨 Enviar solicitação ({len(sel_inact)})", key="btn_req_inact", type="primary"):
+                    sent = 0
+                    for nm in sel_inact:
+                        row = work[work['name'] == nm]
+                        if len(row) > 0 and add_inactivation_request(row.iloc[0]['_cid'], nm, row.iloc[0]['vendor']):
+                            sent += 1
+                    st.success(f"{sent} solicitação(ões) enviada(s) para aprovação do administrador.")
+                    st.rerun()
+            _mine = [r for r in _pend if r.get('requested_by') == st.session_state.get('username')]
+            if _mine:
+                st.info("⏳ Aguardando aprovação: " + ", ".join(r['client_name'] for r in _mine))
 
     st.divider()
 
@@ -2174,25 +2302,39 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
         data = data.sort_values('total_rev', ascending=False)
 
         # Multiselect to choose clients to inactivate
+        _is_full = has_full_data_access()
         client_names = data['name'].tolist()
         selected_to_inactivate = st.multiselect(
-            "Selecione clientes para INATIVAR:",
+            "Selecione clientes para INATIVAR:" if _is_full else "Selecione clientes para SOLICITAR inativação:",
             options=client_names,
             key=f"inactivate_{tab_key}",
-            help="Selecione um ou mais clientes e clique no botão abaixo para marcá-los como inativos"
+            help="Clientes inativados saem das listas de churn e ações" if _is_full
+                 else "A solicitação vai para aprovação do administrador"
         )
 
         if selected_to_inactivate:
-            if st.button(f"🚫 Inativar {len(selected_to_inactivate)} cliente(s)", key=f"btn_inactivate_{tab_key}", type="primary"):
-                new_inactive = inactive_ids.copy()
-                for name in selected_to_inactivate:
-                    match = data[data['name'] == name]
-                    if len(match) > 0:
-                        cid = str(match.iloc[0]['id']).strip()
-                        new_inactive.add(cid)
-                save_inactive_clients(new_inactive)
-                st.success(f"{len(selected_to_inactivate)} cliente(s) marcado(s) como inativo(s)!")
-                st.rerun()
+            if _is_full:
+                if st.button(f"🚫 Inativar {len(selected_to_inactivate)} cliente(s)", key=f"btn_inactivate_{tab_key}", type="primary"):
+                    new_inactive = inactive_ids.copy()
+                    for name in selected_to_inactivate:
+                        match = data[data['name'] == name]
+                        if len(match) > 0:
+                            cid = str(match.iloc[0]['id']).strip()
+                            new_inactive.add(cid)
+                    save_inactive_clients(new_inactive)
+                    st.success(f"{len(selected_to_inactivate)} cliente(s) marcado(s) como inativo(s)!")
+                    st.rerun()
+            else:
+                if st.button(f"📨 Solicitar inativação de {len(selected_to_inactivate)} cliente(s)",
+                             key=f"btn_inactivate_{tab_key}", type="primary"):
+                    sent = 0
+                    for name in selected_to_inactivate:
+                        match = data[data['name'] == name]
+                        if len(match) > 0 and add_inactivation_request(
+                                str(match.iloc[0]['id']).strip(), name, match.iloc[0].get('vendor', '')):
+                            sent += 1
+                    st.success(f"{sent} solicitação(ões) enviada(s) para aprovação do administrador.")
+                    st.rerun()
 
         display = data[['name','state','vendor_short','last_purchase','months_since','impact','total_rev']].copy()
         display.columns = ['Cliente','UF','Vendedor','Última Compra','Meses Inativo','Impacto Anual Est.',f'Receita ({period_label})']
@@ -2239,26 +2381,29 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             df_inactive['vendor_short'] = df_inactive['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
             df_inactive_sorted = df_inactive.sort_values('name')
 
-            # Multiselect to reactivate
-            inactive_names = df_inactive_sorted['name'].tolist()
-            selected_to_reactivate = st.multiselect(
-                "Selecione clientes para REATIVAR:",
-                options=inactive_names,
-                key="reactivate_clients",
-                help="Selecione clientes para devolvê-los às tabelas de Churn"
-            )
+            # Multiselect to reactivate (somente admin/diretor)
+            if has_full_data_access():
+                inactive_names = df_inactive_sorted['name'].tolist()
+                selected_to_reactivate = st.multiselect(
+                    "Selecione clientes para REATIVAR:",
+                    options=inactive_names,
+                    key="reactivate_clients",
+                    help="Selecione clientes para devolvê-los às tabelas de Churn"
+                )
 
-            if selected_to_reactivate:
-                if st.button(f"✅ Reativar {len(selected_to_reactivate)} cliente(s)", key="btn_reactivate", type="primary"):
-                    new_inactive = inactive_ids.copy()
-                    for name in selected_to_reactivate:
-                        match = df_inactive[df_inactive['name'] == name]
-                        if len(match) > 0:
-                            cid = str(match.iloc[0]['id']).strip()
-                            new_inactive.discard(cid)
-                    save_inactive_clients(new_inactive)
-                    st.success(f"{len(selected_to_reactivate)} cliente(s) reativado(s)!")
-                    st.rerun()
+                if selected_to_reactivate:
+                    if st.button(f"✅ Reativar {len(selected_to_reactivate)} cliente(s)", key="btn_reactivate", type="primary"):
+                        new_inactive = inactive_ids.copy()
+                        for name in selected_to_reactivate:
+                            match = df_inactive[df_inactive['name'] == name]
+                            if len(match) > 0:
+                                cid = str(match.iloc[0]['id']).strip()
+                                new_inactive.discard(cid)
+                        save_inactive_clients(new_inactive)
+                        st.success(f"{len(selected_to_reactivate)} cliente(s) reativado(s)!")
+                        st.rerun()
+            else:
+                st.caption("Reativação de clientes é feita pelo administrador.")
 
             display_inact = df_inactive_sorted[['name','state','vendor_short','risk','last_purchase','months_since','total_rev']].copy()
             display_inact.columns = ['Cliente','UF','Vendedor','Risco Original','Última Compra','Meses Inativo',f'Receita ({period_label})']

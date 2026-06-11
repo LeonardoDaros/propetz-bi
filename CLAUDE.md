@@ -13,6 +13,7 @@ Dashboard BI do canal **Propetz Distribuição (PD)** em Streamlit, publicado em
 - `Relatorio Distribuidores Mensal.xlsx` — planilha-fonte lida por `load_data()`. Atualizada pelo Leonardo via página Admin do app (upload).
 - `Qtd_Comprada_Por_Cliente_RECONSTRUIDA.xlsx` — base SKU×cliente reconstruída (blocos: Produto, SKU, Quantidade, Vendedor, Cliente, Código).
 - `inactive_clients.json`, `access_log.json`, `login_attempts.json` — estado persistido do app.
+- `inactive_requests.json` — fluxo de inativação com aprovação: vendedor solicita (Minhas Ações/Churn), admin aprova/rejeita e reativa no Painel do Gestor. Vendedor NÃO inativa direto — não reabrir essa brecha.
 
 ## Persistência no Streamlit Cloud (não regredir!)
 

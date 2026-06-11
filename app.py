@@ -10,7 +10,7 @@ import json
 import base64
 import threading
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ============================================================
 # CONFIG
@@ -603,13 +603,17 @@ def apply_abc_by_value(products):
     if not abc_data:
         for p in products:
             p['valor_12m'] = 0
+            p['qty_12m'] = 0
         return products
     fat = abc_data["faturamento"]
+    qts = abc_data.get("quantidade", {})
     for p in products:
         try:
             p['valor_12m'] = float(fat.get(p['code'], 0))
+            p['qty_12m'] = float(qts.get(p['code'], 0))
         except Exception:
             p['valor_12m'] = 0
+            p['qty_12m'] = 0
     total_val = sum(p['valor_12m'] for p in products)
     if total_val <= 0:
         return products
@@ -767,10 +771,13 @@ def process_excel(xlsx_path):
                 total_val = int(float(total)) if total else 0
             except:
                 total_val = 0
+            cat_str = str(cat).strip() if cat else ''
+            if cat_str.isdigit():
+                cat_str = ''  # planilha às vezes traz o NCM no lugar da categoria
             products.append({
                 'code': str(cod).strip(),
                 'name': str(name).strip() if name else '',
-                'category': str(cat).strip() if cat else '',
+                'category': cat_str,
                 'total_qty': total_val,
                 'abc': str(abc).strip() if abc else 'C'
             })
@@ -1015,6 +1022,27 @@ def show_money_table(df_disp, money_cols, **kwargs):
             d[c] = d[c].apply(fmt_brl_full)
         st.dataframe(d, **kwargs)
 
+def _sku_stats(df_sku):
+    """Por SKU: (qtd típica/mês = mediana entre compradores, nº de compradores,
+    qtd/mês por cliente). Base para todas as estimativas de oportunidade."""
+    if len(df_sku) == 0:
+        return {}, {}, pd.DataFrame()
+    per = df_sku.groupby(['sku', 'cod_cliente']).agg(q=('quantidade', 'sum'), m=('mes', 'nunique')).reset_index()
+    per['pm'] = per['q'] / per['m'].clip(lower=1)
+    per['cod_cliente'] = per['cod_cliente'].astype(str).str.strip()
+    typical = per.groupby('sku')['pm'].median().to_dict()
+    buyers = per.groupby('sku')['cod_cliente'].nunique().to_dict()
+    return typical, buyers, per
+
+def _preco_medio_map(products_df):
+    """Preço médio real por SKU (faturamento 12m ÷ quantidade 12m, Base Mãe)."""
+    out = {}
+    if 'valor_12m' in products_df.columns and 'qty_12m' in products_df.columns:
+        for code, v, q in zip(products_df['code'], products_df['valor_12m'], products_df['qty_12m']):
+            if q and q > 0 and v and v > 0:
+                out[code] = v / q
+    return out
+
 def annual_value_estimate(monthly):
     """Valor anual estimado do cliente: ticket médio dos meses COM compra
     nos últimos 12 meses × 12. Se não comprou nos últimos 12 meses, usa o
@@ -1052,6 +1080,128 @@ def insight_html(type_, label, text, action):
         <div class="insight-action">{action}</div>
     </div>
     """
+
+# ============================================================
+# PAGE: PAINEL DO GESTOR (tela inicial do admin/diretor)
+# ============================================================
+def page_manager(df, months, df_sku, products_df):
+    st.header("🎛️ Painel do Gestor")
+    st.caption(f"Acompanhamento objetivo do canal Distribuição — dados até **{months[-1]}**.")
+
+    n = len(months)
+    monthly_tot = [df['monthly'].apply(lambda m: m[i] if i < len(m) else 0).sum() for i in range(n)]
+
+    # ---- LINHA 1: O MÊS E O ANO, SEM RODEIO ----
+    last = monthly_tot[-1]
+    prev = monthly_tot[-2] if n >= 2 else 0
+    yoy = monthly_tot[n - 13] if n >= 13 else 0
+    last3 = sum(monthly_tot[-3:])
+    prev3 = sum(monthly_tot[-6:-3]) if n >= 6 else 0
+
+    cur_year = _year_of_label(months[-1])
+    prev_year = str(int(cur_year) - 1) if cur_year.isdigit() else ''
+    ytd_idx = [i for i in range(n) if _year_of_label(months[i]) == cur_year]
+    py_idx = [i for i in range(n) if _year_of_label(months[i]) == prev_year][:len(ytd_idx)]
+    ytd = sum(monthly_tot[i] for i in ytd_idx)
+    pytd = sum(monthly_tot[i] for i in py_idx)
+
+    def _pct(cur, base):
+        return f"{(cur - base) / base * 100:+.1f}%" if base > 0 else None
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(f"Receita {months[-1]}", fmt_brl(last), _pct(last, prev),
+              help="Variação vs mês anterior")
+    k2.metric("vs Mesmo Mês Ano Passado", _pct(last, yoy) or "—", f"{fmt_brl(yoy)} em {months[n-13]}" if n >= 13 else "")
+    k3.metric("Últimos 3 Meses", fmt_brl(last3), _pct(last3, prev3),
+              help="Variação vs trimestre móvel anterior")
+    k4.metric(f"Acumulado {cur_year}", fmt_brl(ytd), _pct(ytd, pytd),
+              help=f"vs mesmo período de {prev_year}")
+
+    # Concentração de receita (últimos 12 meses)
+    df_conc = df.copy()
+    df_conc['r12'] = df_conc['monthly'].apply(lambda m: sum(m[-12:]))
+    r12_total = df_conc['r12'].sum()
+    top5 = df_conc.nlargest(5, 'r12')['r12'].sum()
+    if r12_total > 0:
+        st.caption(f"⚖️ Concentração: os 5 maiores clientes respondem por **{top5/r12_total*100:.0f}%** "
+                   f"da receita dos últimos 12 meses.")
+
+    st.divider()
+
+    # ---- LINHA 2: DESEMPENHO POR VENDEDOR ----
+    st.subheader("👥 Desempenho por Vendedor")
+    st.caption(f"Mês de referência: {months[-1]}. Tendência = mês atual vs média dos 3 meses anteriores.")
+    rows = []
+    for v, g in df.groupby('vendor'):
+        if not v:
+            continue
+        rev_m = g['monthly'].apply(lambda m: m[-1] if len(m) >= 1 else 0).sum()
+        base3 = g['monthly'].apply(lambda m: sum(m[-4:-1])).sum() / 3 if n >= 4 else 0
+        buyers = len(g[g['monthly'].apply(lambda m: m[-1] > 0 if len(m) >= 1 else False)])
+        risk_rs = g[g['risk'].isin(['Recuperação', 'Atenção'])]['monthly'].apply(annual_value_estimate).sum()
+        rows.append({
+            'Vendedor': str(v).replace(' Propetz Distribuição', '').replace(' La Maison Propetz', ''),
+            'Receita no Mês': round(rev_m, 2),
+            'Média 3m Anteriores': round(base3, 2),
+            'Tendência': f"{(rev_m / base3 - 1) * 100:+.0f}%" if base3 > 0 else '—',
+            'Compraram no Mês': f"{buyers}/{len(g)}",
+            'Cobertura': f"{buyers / len(g) * 100:.0f}%" if len(g) > 0 else '—',
+            'R$ em Risco (ano)': round(risk_rs, 2),
+        })
+    if rows:
+        vend_df = pd.DataFrame(rows).sort_values('Receita no Mês', ascending=False)
+        show_money_table(vend_df, ['Receita no Mês', 'Média 3m Anteriores', 'R$ em Risco (ano)'],
+                         use_container_width=True, hide_index=True,
+                         height=min(350, 35 * len(vend_df) + 38))
+
+    st.divider()
+
+    # ---- LINHA 3: ONDE AGIR AGORA ----
+    st.subheader("🚨 Maiores Recuperações em Jogo")
+    st.caption("Top 10 clientes ativos esfriando, da base inteira, por receita anual em jogo — cobre isso nas reuniões com o time.")
+    risky = df[(df['risk'].isin(['Recuperação', 'Atenção'])) & (df['status'] == 'Ativo')].copy()
+    if len(risky) > 0:
+        risky['valor'] = risky['monthly'].apply(annual_value_estimate)
+        risky['Prioridade'] = risky['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
+        risky = risky.sort_values('valor', ascending=False).head(10)
+        disp_r = risky[['Prioridade', 'name', 'vendor', 'state', 'last_purchase', 'months_since', 'valor']].copy()
+        disp_r['vendor'] = disp_r['vendor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
+        disp_r.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra', 'Meses', 'R$ em Jogo (ano)']
+        show_money_table(disp_r, ['R$ em Jogo (ano)'], use_container_width=True, hide_index=True,
+                         height=min(400, 35 * len(disp_r) + 38))
+    else:
+        st.success("Nenhum cliente ativo em risco no momento.")
+
+    st.divider()
+
+    # ---- LINHA 4: O TIME ESTÁ USANDO O BI? ----
+    st.subheader("📡 Uso do BI pelo Time (últimos 14 dias)")
+    access_log = _load_access_log()
+    if not access_log:
+        st.info("Sem registros de acesso ainda. (Para o log sobreviver a reinícios do servidor, configure o GITHUB_TOKEN — ver COMO-USAR.md.)")
+    else:
+        df_log = pd.DataFrame(access_log)
+        cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+        recent = df_log[(df_log['action'] == 'login') & (df_log['date'] >= cutoff)]
+        users_all = load_users().get('users', {})
+        urows = []
+        for uname, info in users_all.items():
+            if info.get('role') == 'admin':
+                continue
+            u_logins = recent[recent['user'] == uname]
+            last_seen = df_log[df_log['user'] == uname]['date'].max() if len(df_log[df_log['user'] == uname]) > 0 else None
+            urows.append({
+                'Usuário': info.get('name', uname),
+                'Logins (14d)': len(u_logins),
+                'Último Acesso': last_seen or 'Nunca',
+                'Situação': '✅ Ativo' if len(u_logins) >= 3 else ('🟡 Pouco uso' if len(u_logins) >= 1 else '🔴 Sem uso'),
+            })
+        if urows:
+            st.dataframe(pd.DataFrame(urows).sort_values('Logins (14d)', ascending=False),
+                         use_container_width=True, hide_index=True)
+            n_inactive = sum(1 for r in urows if r['Logins (14d)'] == 0)
+            if n_inactive > 0:
+                st.warning(f"{n_inactive} usuário(s) sem nenhum login nos últimos 14 dias — ferramenta não vira resultado se o time não usa.")
 
 # ============================================================
 # PAGE: MINHAS AÇÕES (tela inicial — lista priorizada de trabalho)
@@ -1110,6 +1260,8 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         pen = cp.groupby('product_code')['client_id'].nunique() / n_cart * 100
         bought_by = cp.groupby('client_id')['product_code'].apply(set).to_dict()
         prod_a = products_df[products_df['abc'] == 'A']
+        _preco = _preco_medio_map(products_df)
+        _typ, _nbuy, _ = _sku_stats(df_sku)
 
         # Foca nos 30 clientes ativos mais valiosos da carteira
         targets = work[work['status'] == 'Ativo'].sort_values('valor_anual', ascending=False).head(30)
@@ -1123,18 +1275,20 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
                     continue
                 p = float(pen.get(code, 0))
                 if p >= 30:
+                    pot = round((_typ.get(code) or 0) * (_preco.get(code) or 0), 2)
                     offers.append({
                         'Cliente': cl['name'],
                         'Vendedor': cl['vendor_short'],
                         'Produto Sugerido': pr['name'],
                         'Categoria': pr['category'],
                         '% da Carteira que Compra': round(p),
+                        'R$ Potencial/Mês': pot,
                         '_valor_cliente': cl['valor_anual'],
                         '_score': p * max(cl['valor_anual'], 1),
                     })
     offers_df = pd.DataFrame(offers)
     if len(offers_df) > 0:
-        offers_df = offers_df.sort_values('_score', ascending=False)
+        offers_df = offers_df.sort_values(['R$ Potencial/Mês', '_score'], ascending=False)
 
     # ---- KPIs ----
     n_urgent = len(calls[calls['risk'] == 'Recuperação'])
@@ -1184,9 +1338,9 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
                 "ou não há dados de produto por cliente na planilha.")
     else:
         disp_offers = offers_df[['Cliente', 'Vendedor', 'Produto Sugerido', 'Categoria',
-                                 '% da Carteira que Compra']].head(40)
-        st.dataframe(disp_offers, use_container_width=True, hide_index=True,
-                     height=min(500, 35 * len(disp_offers) + 38))
+                                 '% da Carteira que Compra', 'R$ Potencial/Mês']].head(40)
+        show_money_table(disp_offers, ['R$ Potencial/Mês'], use_container_width=True, hide_index=True,
+                         height=min(500, 35 * len(disp_offers) + 38))
         _csv_download(offers_df.drop(columns=['_valor_cliente', '_score']),
                       "⬇️ Baixar lista de ofertas (Excel/CSV)",
                       "ofertas_mix.csv", "dl_offers")
@@ -1824,13 +1978,10 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
 def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_sorted, sel_months):
     st.header("🧩 Oportunidades de Mix de Produtos")
 
-    # Quantos meses os dados de SKU cobrem — denominador correto para
-    # transformar quantidades totais em médias mensais
-    sku_months_cov = max(df_sku['mes'].nunique(), 1) if len(df_sku) > 0 else max(len(months), 1)
-
     _abc_meta = load_abc_valor()
     if _abc_meta:
-        st.caption(f"Curvas A/B/C por **faturamento** do canal Distribuição ({_abc_meta.get('periodo', 'últimos 12 meses')}) — Curva A = produtos que geram 80% da receita.")
+        st.caption(f"Curvas A/B/C e estimativas em R$ calculadas pelo **faturamento real** do canal "
+                   f"Distribuição ({_abc_meta.get('periodo', 'últimos 12 meses')}, Base Mãe).")
 
     def _period_sum(m):
         return sum(m[i] for i in sel_indices_sorted if i < len(m))
@@ -1842,7 +1993,6 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     period_label = f"{sel_months[0]} - {sel_months[-1]}" if len(sel_months) > 1 else (sel_months[0] if sel_months else "")
 
     selected = st.selectbox("Selecione um cliente:", active_clients['name'].tolist(), key="mix_client")
-
     if not selected:
         return
 
@@ -1851,336 +2001,134 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     total = _period_sum(c['monthly'])
     months_active = sum(1 for i in sel_indices_sorted if i < len(c['monthly']) and c['monthly'][i] > 0)
     avg = total / months_active if months_active > 0 else 0
-
     is_admin = has_full_data_access()
-    total_qty_all = products_df['total_qty'].sum()
 
-    # Check if we have client×product data
-    has_cp_data = len(df_client_products) > 0
+    # Motor de valor: preço médio real por SKU + estatísticas dos compradores
+    preco_map = _preco_medio_map(products_df)
+    typical, buyers_n, per_buyer = _sku_stats(df_sku)
+    client_pm = {}
+    if len(per_buyer) > 0:
+        _mine = per_buyer[per_buyer['cod_cliente'] == client_id]
+        client_pm = dict(zip(_mine['sku'], _mine['pm']))
+
+    # Produtos que o cliente compra (histórico completo)
     cp_client = pd.DataFrame()
-    if has_cp_data:
-        cp_client = df_client_products[df_client_products['client_id'] == client_id].copy()
+    if len(df_client_products) > 0:
+        cp_client = df_client_products[df_client_products['client_id'].astype(str).str.strip() == client_id].copy()
+    bought_codes = set(cp_client['product_code']) if len(cp_client) > 0 else set(client_pm.keys())
+    has_product_data = len(bought_codes) > 0
 
-    # --- KPIs ---
-    n_products_bought = len(cp_client) if has_cp_data else 0
-    n_products_total = len(products_df)
-    n_curva_a = len(products_df[products_df['abc'] == 'A'])
+    # ---- OPORTUNIDADES: produtos A/B onde há dinheiro na mesa ----
+    ops = []
+    if has_product_data:
+        catalog = products_df[products_df['abc'].isin(['A', 'B'])]
+        for code, name, abc in zip(catalog['code'], catalog['name'], catalog['abc']):
+            prc = preco_map.get(code)
+            typ = typical.get(code)
+            nb = buyers_n.get(code, 0)
+            if not prc or not typ or typ <= 0 or nb < 5:
+                continue  # sem base estatística suficiente
+            if code not in bought_codes:
+                pot = typ * prc
+                tipo = '🆕 Não compra'
+                why = f"{nb} clientes compram (típico {typ:.0f}/mês)"
+            else:
+                atual = client_pm.get(code)
+                if atual is None or atual >= typ * 0.5:
+                    continue  # já compra em nível razoável
+                pot = (typ - atual) * prc
+                tipo = '📉 Compra pouco'
+                why = f"compra {atual:.1f}/mês vs típico {typ:.0f}/mês"
+            if pot < 100:
+                continue  # materialidade mínima: R$ 100/mês
+            ops.append({
+                'Tipo': tipo,
+                'Código': code,
+                'Produto': name,
+                'Curva': abc,
+                'Por quê': why,
+                'R$ Potencial/Mês': round(pot, 2),
+            })
+    ops_df = pd.DataFrame(ops)
+    if len(ops_df) > 0:
+        ops_df = ops_df.sort_values('R$ Potencial/Mês', ascending=False)
+    pot_total = ops_df['R$ Potencial/Mês'].sum() if len(ops_df) > 0 else 0
 
+    # ---- KPIs ----
     k1, k2, k3, k4 = st.columns(4)
     k1.metric(f"Receita ({period_label})", fmt_brl(total))
-    k2.metric("Ticket Médio", fmt_brl(avg))
-    k3.metric("Produtos Comprados", f"{n_products_bought}", f"de {n_products_total} no catálogo")
-    k4.metric("Curva A no Mercado", f"{n_curva_a}")
+    k2.metric("Ticket Médio/Mês", fmt_brl(avg), f"{months_active} meses com compra")
+    k3.metric("Produtos Comprados", f"{len(bought_codes)}", f"de {len(products_df)} no catálogo")
+    k4.metric("💰 Potencial de Mix", f"{fmt_brl(pot_total)}/mês", f"{len(ops_df)} oportunidades")
 
     st.divider()
 
-    # ============================================================
-    # SEÇÃO 1: PRODUTOS QUE O CLIENTE COMPRA
-    # ============================================================
-    if has_cp_data and len(cp_client) > 0:
-        st.subheader("📊 Produtos Comprados pelo Cliente")
-
-        # Enrich with ABC curve
-        cp_enriched = cp_client.merge(
-            products_df[['code', 'abc', 'category']].rename(columns={'code': 'product_code', 'category': 'prod_category'}),
-            on='product_code', how='left'
-        )
-        cp_enriched['abc'] = cp_enriched['abc'].fillna('C')
-        cp_enriched['prod_category'] = cp_enriched['prod_category'].fillna('')
-
-        # Calculate metrics per product (no monthly breakdown available)
-        cp_enriched['share_pct'] = (cp_enriched['total_qty'] / cp_enriched['total_qty'].sum() * 100).round(1)
-        cp_enriched['global_mix_pct'] = (cp_enriched['total_qty'] / total_qty_all * 100).round(1)
-
-        cp_enriched = cp_enriched.sort_values('total_qty', ascending=False)
-
-        # Top products chart
-        top15 = cp_enriched.head(15)
-        _is_admin_chart = has_full_data_access()
-        fig_top = px.bar(top15, y='product_name', x='total_qty', orientation='h', color='abc',
-                        title="Top 15 Produtos do Cliente" + (" (quantidade total comprada)" if _is_admin_chart else ""),
-                        color_discrete_map={'A':'#22c55e','B':'#eab308','C':'#ef4444'},
-                        text='total_qty' if _is_admin_chart else None)
-        if _is_admin_chart:
-            fig_top.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_top.update_layout(xaxis=dict(title='Quantidade Total Comprada'))
-        else:
-            fig_top.update_traces(text=None, textposition=None)
-            fig_top.update_layout(xaxis=dict(title='', showticklabels=False))
-        fig_top.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-                             yaxis=dict(autorange='reversed', title=''), height=450, showlegend=True)
-        st.plotly_chart(fig_top, use_container_width=True)
-
-        # Table
-        if is_admin:
-            display_cp = cp_enriched[['product_code','product_name','abc','total_qty','share_pct','global_mix_pct']].copy()
-            display_cp.columns = ['Código','Produto','Curva','Qtd Total','% Mix Cliente','% Mix Global']
-        else:
-            display_cp = cp_enriched[['product_code','product_name','abc','share_pct','global_mix_pct']].copy()
-            display_cp.columns = ['Código','Produto','Curva','% Mix Cliente','% Mix Global']
-        st.dataframe(display_cp, use_container_width=True, hide_index=True, height=min(400, 35 * len(display_cp) + 38))
-
-        st.divider()
-
-        # ============================================================
-        # SEÇÃO 2: PRODUTOS ABAIXO DO POTENCIAL (vs demanda do mercado)
-        # ============================================================
-        st.subheader("📉 Produtos Abaixo do Potencial")
-        st.caption("Produtos que o cliente compra, mas em volume menor do que a demanda de mercado sugere")
-
-        # Compare client share vs market share for each product
-        total_market = products_df['total_qty'].sum()
-        if total_market > 0 and len(cp_enriched) > 0:
-            cp_potential = cp_enriched.drop_duplicates(subset=['product_code']).merge(
-                products_df[['code','total_qty']].rename(columns={'code':'product_code','total_qty':'market_qty'}),
-                on='product_code', how='left'
-            )
-            cp_potential['market_qty'] = cp_potential['market_qty'].fillna(0)
-            cp_potential['market_share_pct'] = (cp_potential['market_qty'] / total_market * 100).round(2)
-            # Gap = how much the client underbuys relative to market importance
-            cp_potential['gap'] = (cp_potential['market_share_pct'] - cp_potential['share_pct']).round(2)
-            # Impact = gap weighted by market relevance
-            cp_potential['impact_score'] = (cp_potential['gap'] * cp_potential['market_share_pct'] / 10).round(2)
-
-            # Show products with positive gap (client buys less than expected), broader filter
-            underperforming = cp_potential[(cp_potential['gap'] > 0.5)].copy()
-            underperforming = underperforming.sort_values('impact_score', ascending=False)
-
-            if len(underperforming) > 0:
-                def severity(row):
-                    if row['impact_score'] >= 2:
-                        return '🔴 Alto Potencial'
-                    elif row['impact_score'] >= 0.5:
-                        return '🟡 Potencial Médio'
-                    else:
-                        return '⚪ Potencial Baixo'
-                underperforming['severidade'] = underperforming.apply(severity, axis=1)
-
-                # Qtd potencial/mês = quanto o cliente compraria do produto se o
-                # mix dele seguisse o mix do mercado, distribuído pelos meses
-                # que a base de SKU realmente cobre (não pelo filtro de período)
-                total_client_qty = cp_potential['total_qty'].sum()
-                n_months_data = sku_months_cov
-                for idx_r in underperforming.index:
-                    mkt_share = underperforming.loc[idx_r, 'market_share_pct'] / 100
-                    current_qty = underperforming.loc[idx_r, 'total_qty']
-                    potencial_mensal = (total_client_qty * mkt_share) / n_months_data
-                    underperforming.loc[idx_r, 'qtd_potencial_mensal'] = round(max(potencial_mensal, current_qty / n_months_data), 1)
-                    underperforming.loc[idx_r, 'qtd_atual_mensal'] = round(current_qty / n_months_data, 1)
-
-                top_under = underperforming.head(3)
-                if len(top_under) > 0:
-                    names = ', '.join(top_under['product_name'].tolist())
-                    st.markdown(insight_html('warning', 'PRODUTOS COM ESPAÇO PARA CRESCER',
-                        f"Os produtos com maior potencial de aumento: {names}.",
-                        "Estes produtos são relevantes no mercado mas o cliente compra abaixo do esperado."), unsafe_allow_html=True)
-
-                disp_under = underperforming[['product_code','product_name','abc','total_qty','qtd_atual_mensal','qtd_potencial_mensal','share_pct','market_share_pct','gap','severidade']].head(30).copy()
-                disp_under.columns = ['Código','Produto','Curva','Qtd Total','Qtd Atual/Mês','Qtd Potencial/Mês','% Mix Cliente','% Mercado','Gap (pp)','Potencial']
-                st.dataframe(disp_under, use_container_width=True, hide_index=True,
-                           height=min(500, 35 * len(disp_under) + 38))
-            else:
-                st.success("Mix do cliente está alinhado com o mercado! Nenhum gap significativo encontrado.")
-        else:
-            st.info("Dados de mercado insuficientes para análise de potencial.")
-
-        st.divider()
-
-    # ============================================================
-    # SEÇÃO 3: PRODUTOS QUE O CLIENTE NUNCA COMPROU
-    # ============================================================
-    st.subheader("🎯 Oportunidades: Produtos que o Cliente Não Compra")
-    st.caption("Produtos do catálogo que este cliente nunca adquiriu, organizados por relevância (Curva A → B → C)")
-
-    # Get codes the client bought
-    bought_codes = set(cp_client['product_code'].tolist()) if len(cp_client) > 0 else set()
-
-    # Products never bought
-    never_bought = products_df[~products_df['code'].isin(bought_codes)].copy()
-
-    if len(never_bought) > 0:
-        # Count per curve
-        nb_a = never_bought[never_bought['abc'] == 'A']
-        nb_b = never_bought[never_bought['abc'] == 'B']
-        nb_c = never_bought[never_bought['abc'] == 'C']
-
-        nc1, nc2, nc3 = st.columns(3)
-        nc1.metric("Curva A não comprados", f"{len(nb_a)} de {n_curva_a}",
-                   f"{len(nb_a)/n_curva_a*100:.0f}% de oportunidade" if n_curva_a > 0 else "")
-        nc2.metric("Curva B não comprados", f"{len(nb_b)}")
-        nc3.metric("Curva C não comprados", f"{len(nb_c)}")
-
-        if len(nb_a) > 0:
-            st.markdown(insight_html('warning', f'CURVA A - {len(nb_a)} PRODUTOS FALTANDO',
-                f"Este cliente não compra {len(nb_a)} dos {n_curva_a} produtos mais vendidos da Propetz.",
-                "Prioridade máxima: apresentar estes produtos ao cliente."), unsafe_allow_html=True)
-
-        # Tabs for each curve
-        tab_a, tab_b, tab_c = st.tabs([
-            f"🟢 Curva A ({len(nb_a)})",
-            f"🟡 Curva B ({len(nb_b)})",
-            f"🔴 Curva C ({len(nb_c)})"
-        ])
-
-        # Referência defensável de venda: entre os clientes que COMPRAM o produto,
-        # quanto um comprador típico (mediana) leva por mês em que compra
-        _typical_monthly = {}
-        _buyers_count = {}
-        if len(df_sku) > 0:
-            _per_buyer = df_sku.groupby(['sku', 'cod_cliente']).agg(
-                _q=('quantidade', 'sum'), _m=('mes', 'nunique')).reset_index()
-            _per_buyer['_per_month'] = _per_buyer['_q'] / _per_buyer['_m'].clip(lower=1)
-            _typical_monthly = _per_buyer.groupby('sku')['_per_month'].median().round(1).to_dict()
-            _buyers_count = _per_buyer.groupby('sku')['cod_cliente'].nunique().to_dict()
-
-        def show_never_bought(df_nb, tab):
-            with tab:
-                if len(df_nb) == 0:
-                    st.success("Cliente já compra todos os produtos desta curva!")
-                    return
-                st.caption("**Qtd Típica/Mês** = mediana do que um comprador deste produto leva por mês em que compra — use como sugestão de pedido inicial.")
-                disp = df_nb[['code','name','category','total_qty']].copy()
-                disp['% Mercado'] = (disp['total_qty'] / max(total_qty_all, 1) * 100).round(2)
-                disp['Clientes que Compram'] = disp['code'].map(_buyers_count).fillna(0).astype(int)
-                disp['Qtd Típica/Mês'] = disp['code'].map(_typical_monthly)
-                disp = disp.drop(columns=['total_qty'])
-                disp.columns = ['Código','Produto','Categoria','% Mercado','Clientes que Compram','Qtd Típica/Mês']
-                st.dataframe(disp, use_container_width=True, hide_index=True, height=min(400, 35 * len(disp) + 38))
-
-        show_never_bought(nb_a, tab_a)
-        show_never_bought(nb_b, tab_b)
-        show_never_bought(nb_c, tab_c)
+    # ---- SEÇÃO 1: O QUE OFERECER (a receita vem primeiro) ----
+    st.subheader("🎯 O que oferecer para este cliente")
+    if not has_product_data:
+        st.info("Sem histórico de produtos para este cliente — não é possível calcular oportunidades.")
+    elif len(ops_df) == 0:
+        st.success("Este cliente já compra os produtos Curva A/B em nível típico — sem gaps relevantes.")
     else:
-        st.success("Incrível! Este cliente compra todos os produtos do catálogo!")
+        st.caption("Produtos **Curva A/B** com 5+ compradores, priorizados pelo R$ estimado "
+                   "(quantidade típica dos compradores × preço médio real). Entram na lista apenas "
+                   "oportunidades acima de R$ 100/mês.")
+        show_money_table(ops_df.head(15), ['R$ Potencial/Mês'], use_container_width=True, hide_index=True,
+                         height=min(560, 35 * min(len(ops_df), 15) + 38))
+        if len(ops_df) > 15:
+            st.caption(f"Mostrando as 15 maiores de {len(ops_df)} oportunidades — baixe a lista completa.")
+        _csv_download(ops_df, "⬇️ Baixar oportunidades (Excel/CSV)", "oportunidades_mix.csv", "dl_mix_ops")
+
+    st.divider()
+
+    # ---- SEÇÃO 2: RAIO-X — o que o cliente compra hoje (em valor) ----
+    st.subheader("📊 O que o cliente compra hoje")
+    if len(cp_client) == 0:
+        st.info("Sem dados de produtos comprados para este cliente.")
+        return
+
+    cp = cp_client.merge(
+        products_df[['code', 'abc']].rename(columns={'code': 'product_code'}),
+        on='product_code', how='left'
+    )
+    cp['abc'] = cp['abc'].fillna('C')
+    cp['preco'] = cp['product_code'].map(preco_map)
+    cp['valor_est'] = (cp['total_qty'] * cp['preco']).fillna(0)
+    _tot_val = cp['valor_est'].sum()
+    cp['mix_pct'] = (cp['valor_est'] / _tot_val * 100).round(1) if _tot_val > 0 else 0.0
+    cp = cp.sort_values('valor_est', ascending=False)
+
+    top12 = cp.head(12)
+    if is_admin:
+        fig_top = px.bar(top12, y='product_name', x='valor_est', orientation='h', color='abc',
+                         title="Top 12 do Cliente (R$ estimado, histórico)",
+                         color_discrete_map={'A': '#22c55e', 'B': '#eab308', 'C': '#ef4444'})
+        fig_top.update_traces(hovertemplate='%{y}: R$ %{x:,.0f}<extra></extra>')
+        fig_top.update_layout(xaxis=dict(title='R$ estimado'))
+    else:
+        fig_top = px.bar(top12, y='product_name', x='mix_pct', orientation='h', color='abc',
+                         title="Top 12 do Cliente (% do mix em valor)",
+                         color_discrete_map={'A': '#22c55e', 'B': '#eab308', 'C': '#ef4444'})
+        fig_top.update_traces(hovertemplate='%{y}: %{x:.1f}%<extra></extra>')
+        fig_top.update_layout(xaxis=dict(title='% do mix'))
+    fig_top.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
+                          yaxis=dict(autorange='reversed', title=''), height=420, showlegend=True)
+    st.plotly_chart(fig_top, use_container_width=True)
+
+    if is_admin:
+        disp_cp = cp[['product_code', 'product_name', 'abc', 'total_qty', 'valor_est', 'mix_pct']].copy()
+        disp_cp.columns = ['Código', 'Produto', 'Curva', 'Qtd Total', 'R$ Estimado', '% Mix (valor)']
+        show_money_table(disp_cp, ['R$ Estimado'], use_container_width=True, hide_index=True,
+                         height=min(420, 35 * len(disp_cp) + 38))
+    else:
+        disp_cp = cp[['product_code', 'product_name', 'abc', 'mix_pct']].copy()
+        disp_cp.columns = ['Código', 'Produto', 'Curva', '% Mix (valor)']
+        st.dataframe(disp_cp, use_container_width=True, hide_index=True,
+                     height=min(420, 35 * len(disp_cp) + 38))
 
 # ============================================================
 # PAGE: CHURN
 # ============================================================
-
-    st.divider()
-
-    # ============================================================
-    # SEÇÃO: PRODUTOS ABAIXO DO POTENCIAL (Gap Analysis)
-    # ============================================================
-    if len(df_sku) > 0:
-        st.subheader("📉 Produtos Abaixo do Potencial - Análise de Gap")
-        st.caption("Produtos com >=5 clientes compradores: identifica oportunidades com base na diferença entre média de top 25% buyers vs média geral")
-        
-        # Aggregate by product SKU across all clients
-        prod_by_sku = df_sku.groupby('sku').agg({
-            'produto': 'first',
-            'cliente': 'nunique',
-            'quantidade': ['sum', 'mean']
-        }).reset_index()
-        prod_by_sku.columns = ['sku', 'produto', 'num_clientes', 'total_qty', 'avg_qty_per_client']
-        
-        # Filter products with >= 5 buyers
-        prod_potential = prod_by_sku[prod_by_sku['num_clientes'] >= 5].copy()
-        
-        if len(prod_potential) > 0:
-            # For each product, calculate top 25% average
-            gap_data = []
-            for _, row in prod_potential.iterrows():
-                sku_code = row['sku']
-                prod_name = row['produto']
-                num_clientes = row['num_clientes']
-                avg_all = row['avg_qty_per_client']
-                
-                # Get all clients and their quantities for this SKU
-                sku_clients = df_sku[df_sku['sku'] == sku_code].groupby('cliente')['quantidade'].sum().reset_index()
-                sku_clients = sku_clients.sort_values('quantidade', ascending=False)
-                
-                # Top 25% of clients
-                n_top25 = max(1, int(len(sku_clients) * 0.25))
-                top25_qty = sku_clients.head(n_top25)['quantidade'].mean()
-                
-                # Gap percentage
-                gap_pct = ((top25_qty - avg_all) / top25_qty * 100) if top25_qty > 0 else 0
-                
-                # Potencial extra/mês: se todos os compradores chegassem ao nível
-                # do top 25%, distribuído pelos meses cobertos pela base de SKU
-                potencial_extra_mensal = (top25_qty - avg_all) * num_clientes / sku_months_cov
-                
-                gap_data.append({
-                    'Produto': prod_name,
-                    'SKU': sku_code,
-                    'Clientes': num_clientes,
-                    'Média/Cliente': round(avg_all, 1),
-                    'Média Top 25%': round(top25_qty, 1),
-                    'Gap %': round(gap_pct, 1),
-                    'Potencial Extra/Mês': round(potencial_extra_mensal, 1)
-                })
-            
-            gap_df = pd.DataFrame(gap_data)
-            gap_df = gap_df.sort_values('Potencial Extra/Mês', ascending=False)
-            
-            if len(gap_df) > 0:
-                st.dataframe(gap_df, use_container_width=True, hide_index=True, height=400)
-                
-                # Top opportunities insight
-                top_gap = gap_df.head(3)
-                if len(top_gap) > 0:
-                    top_prods = ', '.join(top_gap['Produto'].tolist())
-                    st.markdown(insight_html('warning', 'TOP OPORTUNIDADES DE GAP',
-                        f"Produtos com maior potencial: {top_prods}.",
-                        "Estes produtos têm clientes que compram muito (top 25%) e clientes que compram pouco. Oportunidade de aumentar compras dos demais clientes."), unsafe_allow_html=True)
-        else:
-            st.info("Nenhum produto com 5+ clientes para análise de gap.")
-        
-        st.divider()
-
-        # ============================================================
-        # NOVA SEÇÃO: OPORTUNIDADES DE CADASTRO DE PRODUTOS
-        # ============================================================
-        st.subheader("🎯 Oportunidades de Cadastro de Produtos")
-        st.caption("Produtos que >30% de clientes do mesmo vendedor compram, mas este cliente não compra ainda")
-        
-        # Get current client's vendor
-        client_vendor = df[df['name'] == selected].iloc[0]['vendor'] if selected in df['name'].values else ''
-        
-        if client_vendor:
-            # Get all clients of same vendor
-            same_vendor_clients = df[df['vendor'] == client_vendor]['id'].unique()
-            
-            # Get products bought by same vendor clients
-            vendor_products = df_sku[df_sku['cod_cliente'].isin(same_vendor_clients)].copy()
-            
-            # Products this client already buys
-            client_sku = set(df_sku[df_sku['cod_cliente'].astype(str).str.strip() == str(client_id).strip()]['sku'].unique())
-            
-            # Find products not yet bought by this client
-            opp_data = []
-            for sku_code in vendor_products['sku'].unique():
-                if sku_code not in client_sku:
-                    # % of same-vendor clients buying this SKU
-                    buyers = vendor_products[vendor_products['sku'] == sku_code]['cod_cliente'].nunique()
-                    pct_buyers = (buyers / len(same_vendor_clients)) * 100 if len(same_vendor_clients) > 0 else 0
-                    
-                    if pct_buyers >= 30:
-                        # Cada linha do SKU já é "qtd num mês de compra de um cliente":
-                        # a mediana dessas linhas É a referência mensal típica
-                        avg_qty = vendor_products[vendor_products['sku'] == sku_code]['quantidade'].median()
-                        prod_name = vendor_products[vendor_products['sku'] == sku_code]['produto'].iloc[0]
-                        vendedor = vendor_products[vendor_products['sku'] == sku_code]['vendedor'].iloc[0]
-                        
-                        opp_data.append({
-                            'Cliente': selected,
-                            'Vendedor': vendedor.replace(' Propetz Distribuição', '').replace(' La Maison Propetz', ''),
-                            'Produto': prod_name,
-                            'SKU': sku_code,
-                            '% Clientes Similares': round(pct_buyers, 1),
-                            'Qtd Potencial/Mês': round(avg_qty, 1)
-                        })
-            
-            if opp_data:
-                opp_df = pd.DataFrame(opp_data)
-                opp_df = opp_df.sort_values('% Clientes Similares', ascending=False)
-                st.dataframe(opp_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma oportunidade de cadastro encontrada (todos produtos já comprados ou sem 30% de penetração).")
-        else:
-            st.info("Não foi possível identificar o vendedor do cliente.")
-
 def page_churn(df, months, sel_indices_sorted, sel_months):
     st.header("⚠️ Gestão de Churn")
 
@@ -2320,7 +2268,7 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 # ============================================================
 # PAGE: PRODUTOS
 # ============================================================
-def page_products(products_df):
+def page_products(products_df, df_sku):
     st.header("📦 Análise de Produtos")
 
     is_admin = has_full_data_access()
@@ -2417,6 +2365,41 @@ def page_products(products_df):
     else:
         display.columns = ['Código','Produto','Categoria','Curva','% do Volume']
         st.dataframe(display, use_container_width=True, hide_index=True, height=500)
+
+    # ---- ANÁLISE DE GAP GLOBAL (visão de portfólio do gestor) ----
+    if is_admin and len(df_sku) > 0:
+        st.divider()
+        st.subheader("📉 Análise de Gap — Potencial da Base Inteira")
+        st.caption("Produtos com 5+ compradores: se os demais compradores chegassem ao nível do top 25%, "
+                   "quanto a mais venderíamos por mês. Use para escolher campanhas de produto.")
+        sku_cov = max(df_sku['mes'].nunique(), 1)
+        preco_map = _preco_medio_map(products_df)
+        nome_map = df_sku.groupby('sku')['produto'].first().to_dict()
+        per = df_sku.groupby(['sku', 'cod_cliente'])['quantidade'].sum().reset_index()
+        gap_rows = []
+        for sku_code, grp in per.groupby('sku'):
+            if grp['cod_cliente'].nunique() < 5:
+                continue
+            qs = grp['quantidade'].sort_values(ascending=False)
+            n_top = max(1, int(len(qs) * 0.25))
+            top25 = qs.head(n_top).mean()
+            avg_all = qs.mean()
+            extra_q = (top25 - avg_all) * len(qs) / sku_cov
+            prc = preco_map.get(str(sku_code), 0)
+            gap_rows.append({
+                'Produto': nome_map.get(sku_code, ''),
+                'SKU': sku_code,
+                'Clientes': grp['cod_cliente'].nunique(),
+                'Média/Cliente': round(avg_all, 1),
+                'Média Top 25%': round(top25, 1),
+                'Qtd Extra/Mês': round(extra_q, 1),
+                'R$ Potencial/Mês': round(extra_q * prc, 2),
+            })
+        if gap_rows:
+            gap_df = pd.DataFrame(gap_rows).sort_values('R$ Potencial/Mês', ascending=False)
+            show_money_table(gap_df.head(30), ['R$ Potencial/Mês'], use_container_width=True,
+                             hide_index=True, height=500)
+            _csv_download(gap_df, "⬇️ Baixar análise completa (Excel/CSV)", "gap_portfolio.csv", "dl_gap")
 
 # ============================================================
 # PAGE: ADMIN
@@ -2664,16 +2647,27 @@ def main():
         """, unsafe_allow_html=True)
 
         # --- Navigation ---
-        pages = {
-            "✅ Minhas Ações": "actions",
-            "📊 Visão Geral": "overview",
-            "👤 Clientes": "clients",
-            "🧩 Mix de Produtos": "mix",
-            "⚠️ Churn": "churn",
-            "📦 Produtos": "products",
-        }
-        if st.session_state["role"] == "admin":
-            pages["⚙️ Admin"] = "admin"
+        if has_full_data_access():
+            pages = {
+                "🎛️ Painel do Gestor": "manager",
+                "✅ Ações do Time": "actions",
+                "📊 Visão Geral": "overview",
+                "👤 Clientes": "clients",
+                "🧩 Mix de Produtos": "mix",
+                "⚠️ Churn": "churn",
+                "📦 Produtos": "products",
+            }
+            if st.session_state["role"] == "admin":
+                pages["⚙️ Admin"] = "admin"
+        else:
+            pages = {
+                "✅ Minhas Ações": "actions",
+                "📊 Minha Visão Geral": "overview",
+                "👤 Meus Clientes": "clients",
+                "🧩 Mix de Produtos": "mix",
+                "⚠️ Churn": "churn",
+                "📦 Produtos": "products",
+            }
 
         selected_page = st.radio("Navegação", list(pages.keys()), label_visibility="collapsed")
 
@@ -2851,7 +2845,9 @@ def main():
         st.session_state[_page_log_key] = True
         log_page_view(st.session_state.get("username", ""), selected_page)
 
-    if page == "actions":
+    if page == "manager":
+        page_manager(df_clients, months, df_sku, df_products)
+    elif page == "actions":
         page_actions(df_clients, df_sku, df_products, df_client_products, months)
     elif page == "overview":
         page_overview(df_clients, months, year_ranges, sel_indices, sel_indices_sorted, sel_months)
@@ -2862,7 +2858,7 @@ def main():
     elif page == "churn":
         page_churn(df_clients, months, sel_indices_sorted, sel_months)
     elif page == "products":
-        page_products(df_products)
+        page_products(df_products, df_sku)
     elif page == "admin":
         page_admin()
 

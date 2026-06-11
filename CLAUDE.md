@@ -26,7 +26,7 @@ O disco do Streamlit Cloud é efêmero — era a causa do app "cair" todo dia (p
 
 ## Páginas do app
 
-`page_actions` (tela inicial: contatos prioritários por receita em jogo + ofertas de mix Curva A, com export CSV), `page_overview` (KPIs, receita mensal/anual, cobertura e receita por vendedor), `page_clients` (tabela de clientes, painel de detalhe, tendência, dias sem compra), `page_mix` (curva ABC 80/15/5, top produtos, variedade por cliente), `page_churn` (classificação automática), `page_products` (catálogo com curva ABC), `page_admin` (upload de planilha, gestão de usuários).
+Navegação por papel: admin/diretor abrem no `page_manager` (Painel do Gestor: mês vs histórico, YTD, desempenho/cobertura por vendedor, top recuperações, adoção do BI); vendedores abrem no `page_actions` (contatos prioritários + ofertas com R$ potencial/mês, export CSV). Demais: `page_overview` (insights no topo), `page_clients`, `page_mix` (redesenhada 2026-06-10: oportunidades "não compra"/"compra pouco" priorizadas por R$ potencial = qtd típica mediana × preço médio real, materialidade mín. R$ 100/mês; raio-x do cliente em valor), `page_churn`, `page_products` (curva por faturamento + análise de gap global admin), `page_admin`. Estimativas em R$ usam `_preco_medio_map()` (faturamento÷qtd 12m do abc_valor.json) e `_sku_stats()` (mediana/compradores por SKU).
 
 Impacto financeiro de churn/risco usa `annual_value_estimate()` (ticket médio dos últimos 12 meses × 12) — não reintroduzir cálculos com anos fixos ('2024'/'2023').
 

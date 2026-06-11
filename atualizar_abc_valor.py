@@ -25,7 +25,7 @@ ws = wb['TRANSACOES']
 trans = []
 meses = set()
 for row in ws.iter_rows(min_row=2, values_only=True):
-    ano, mes, bu, sku, vt, tipo = row[0], row[1], row[3], row[5], row[13], row[16]
+    ano, mes, bu, sku, qt, vt, tipo = row[0], row[1], row[3], row[5], row[11], row[13], row[16]
     if not ano or str(tipo).strip() != 'real':
         continue
     if 'Distribui' not in str(bu):
@@ -34,15 +34,22 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         vt = float(vt or 0)
     except Exception:
         vt = 0
-    trans.append((int(ano), int(mes), str(sku).strip(), vt))
+    try:
+        qt = float(qt or 0)
+    except Exception:
+        qt = 0
+    trans.append((int(ano), int(mes), str(sku).strip(), qt, vt))
     meses.add((int(ano), int(mes)))
 
 ult12 = sorted(meses)[-12:]
 ult12_set = set(ult12)
 fat = defaultdict(float)
-for ano, mes, sku, vt in trans:
+qty = defaultdict(float)
+for ano, mes, sku, qt, vt in trans:
     if (ano, mes) in ult12_set:
         fat[sku] += vt
+        qty[sku] += qt
+qty = {k: round(v, 1) for k, v in qty.items() if fat.get(k, 0) > 0}
 fat = {k: round(v, 2) for k, v in fat.items() if v > 0}
 
 MESES_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
@@ -54,6 +61,7 @@ data = {
     "periodo": periodo,
     "criterio": "Faturamento do canal Propetz Distribuição, últimos 12 meses (Base Mãe)",
     "faturamento": fat,
+    "quantidade": qty,
 }
 with open(OUT, 'w', encoding='utf-8') as f:
     json.dump(data, f, ensure_ascii=False, indent=1)

@@ -1061,15 +1061,16 @@ def compute_preset_indices(preset, months):
 
 def show_money_table(df_disp, money_cols, **kwargs):
     """Tabela com colunas em R$ formatadas SEM virar texto — assim a ordenação
-    por clique no cabeçalho continua numérica (e não alfabética)."""
+    por clique no cabeçalho continua numérica (e não alfabética).
+    Retorna o resultado de st.dataframe (evento de seleção, quando usado)."""
     fmt_map = {c: fmt_brl_full for c in money_cols if c in df_disp.columns}
     try:
-        st.dataframe(df_disp.style.format(fmt_map), **kwargs)
+        return st.dataframe(df_disp.style.format(fmt_map), **kwargs)
     except Exception:
         d = df_disp.copy()
         for c in fmt_map:
             d[c] = d[c].apply(fmt_brl_full)
-        st.dataframe(d, **kwargs)
+        return st.dataframe(d, **kwargs)
 
 def _sku_stats(df_sku):
     """Por SKU: (qtd típica/mês = mediana entre compradores, nº de compradores,
@@ -1421,14 +1422,47 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         st.success("Nenhum cliente esfriando na carteira. Foque nas ofertas abaixo!")
     else:
         top_calls = calls.head(20).copy()
+        _pend_ids = {r['client_id'] for r in pending_inactivation_requests()}
         top_calls['Prioridade'] = top_calls['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
+        # ⏳ = já existe solicitação de inativação aguardando aprovação
+        top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] = \
+            top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] + ' ⏳'
         top_calls['Sempre Comprou'] = top_calls['_cid'].map(fav).fillna('—')
+        top_calls = top_calls.reset_index(drop=True)
         disp_calls = top_calls[['Prioridade', 'name', 'vendor_short', 'state', 'last_purchase',
                                 'months_since', 'valor_anual', 'Sempre Comprou']].copy()
         disp_calls.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra',
                               'Meses sem Comprar', 'Valor Anual Est.', 'Sempre Comprou']
-        show_money_table(disp_calls, ['Valor Anual Est.'], use_container_width=True, hide_index=True,
-                         height=min(500, 35 * len(disp_calls) + 38))
+        ev = show_money_table(disp_calls, ['Valor Anual Est.'], use_container_width=True, hide_index=True,
+                              height=min(500, 35 * len(disp_calls) + 38),
+                              on_select="rerun", selection_mode="multi-row", key="calls_sel")
+        st.caption("☑️ Cliente fechou ou não existe mais? Marque a caixinha à esquerda da linha "
+                   "e use o botão que aparece abaixo. ⏳ = solicitação já enviada.")
+        try:
+            _sel_rows = list(ev.selection.rows) if ev and ev.selection and ev.selection.rows else []
+        except Exception:
+            _sel_rows = []
+        if _sel_rows:
+            _sel_clients = top_calls.iloc[_sel_rows]
+            _names_prev = ", ".join(_sel_clients['name'].head(3).tolist()) + ("…" if len(_sel_clients) > 3 else "")
+            if has_full_data_access():
+                if st.button(f"🚫 Inativar {len(_sel_rows)} selecionado(s): {_names_prev}",
+                             key="btn_inact_inline", type="primary"):
+                    _inact = load_inactive_clients()
+                    for _, rw in _sel_clients.iterrows():
+                        _inact.add(rw['_cid'])
+                    save_inactive_clients(_inact)
+                    st.success(f"{len(_sel_rows)} cliente(s) inativado(s).")
+                    st.rerun()
+            else:
+                if st.button(f"📨 Solicitar inativação de {len(_sel_rows)} selecionado(s): {_names_prev}",
+                             key="btn_inact_inline", type="primary"):
+                    _sent = 0
+                    for _, rw in _sel_clients.iterrows():
+                        if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
+                            _sent += 1
+                    st.success(f"{_sent} solicitação(ões) enviada(s) para aprovação do administrador.")
+                    st.rerun()
         if len(calls) > 20:
             st.caption(f"Mostrando os 20 principais de {len(calls)} clientes esfriando. Baixe a lista completa abaixo.")
 
@@ -1442,9 +1476,9 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
 
     # ---- SOLICITAR INATIVAÇÃO (vendedor pede, admin aprova) ----
     if not has_full_data_access():
-        with st.expander("🚫 Cliente fechou ou não existe mais? Solicite a inativação"):
-            st.caption("A solicitação vai para aprovação do administrador. Enquanto não for aprovada, "
-                       "o cliente continua nas listas.")
+        with st.expander("🚫 Solicitar inativação de cliente FORA da lista acima"):
+            st.caption("Para os clientes da tabela, use a caixinha de seleção na própria linha. "
+                       "A solicitação vai para aprovação do administrador — até lá, o cliente continua nas listas.")
             _pend = pending_inactivation_requests()
             _pend_ids = {r['client_id'] for r in _pend}
             _opts = work[~work['_cid'].isin(_pend_ids)].sort_values('name')['name'].tolist()

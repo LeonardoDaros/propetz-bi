@@ -13,7 +13,7 @@ Dashboard BI do canal **Propetz Distribuição (PD)** em Streamlit, publicado em
 - `Relatorio Distribuidores Mensal.xlsx` — planilha-fonte lida por `load_data()`. Atualizada pelo Leonardo via página Admin do app (upload).
 - `Qtd_Comprada_Por_Cliente_RECONSTRUIDA.xlsx` — base SKU×cliente reconstruída (blocos: Produto, SKU, Quantidade, Vendedor, Cliente, Código).
 - `inactive_clients.json`, `access_log.json`, `login_attempts.json` — estado persistido do app.
-- `inactive_requests.json` — fluxo de inativação com aprovação: vendedor E diretora SUGEREM (Minhas Ações/Churn, e a diretora também direto na tabela do Painel do Gestor); só o admin aprova/rejeita/reativa/inativa direto. Permissões: `has_full_data_access()` (admin+diretor, vê tudo) ≠ `can_approve_inactivations()` (só admin). Não colar esses dois conceitos de novo nem reabrir a brecha de inativar direto.
+- `inactive_requests.json` — fluxo de inativação com aprovação: vendedor E diretora SUGEREM (Minhas Ações/Churn, e a diretora também direto na tabela do Painel do Gestor); só o admin aprova/rejeita/reativa/inativa direto. Permissões: `has_full_data_access()` (admin+diretor, vê tudo) ≠ `can_approve_inactivations()` (só admin). Não colar esses dois conceitos de novo nem reabrir a brecha de inativar direto. Toda inativação carrega MOTIVO obrigatório (`MOTIVOS_INATIVACAO`, selectbox `index=None`) + observação livre, via `_inativacao_form()` (form por cliente); vira banco de dados no Painel do Gestor ("Histórico de inativações e motivos", com resumo por motivo + CSV). Seleção inline de tabela é clampada a índices válidos (anti-crash em rerun).
 
 ## Persistência no Streamlit Cloud (não regredir!)
 

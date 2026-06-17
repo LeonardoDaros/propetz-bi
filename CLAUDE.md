@@ -22,6 +22,7 @@ O disco do Streamlit Cloud é efêmero — era a causa do app "cair" todo dia (p
 - **Planilha** commitada no repo — o `.gitignore` NÃO pode voltar a ter `*.xlsx`. Upload pela página Admin também commita no branch `main` via API do GitHub.
 - **Estado** (`users.yaml`, `inactive_clients.json`, `access_log.json`) sincronizado com o branch `state` do repo: `_sync_state_from_github()` restaura no boot, `_push_state_file()` envia a cada gravação (em thread, melhor esforço).
 - Requer `GITHUB_TOKEN` (escopo repo) nos secrets do Streamlit Cloud — instruções no `COMO-USAR.md`. Sem token, degrada graciosamente para só-local (sem persistência entre restarts).
+- `_gh_token()` limpa aspas/espaços do valor (erro de colagem comum); escritas de estado são serializadas por `_GH_WRITE_LOCK` (evita corrida read-SHA/PUT). Página Admin tem botão "Testar conexão com o GitHub" (`_gh_diagnose()`) que reporta passo a passo onde a persistência quebra (token ausente/inválido/sem acesso ao repo/falha de escrita). Banner vermelho no topo alerta admin/diretor quando não há token.
 - `deploy.bat` / `setup.bat` — fluxo de deploy em 1 clique (commit + push → Streamlit Cloud atualiza em ~1 min).
 - `AUDIT_REPORT.txt` — auditoria completa de 2026-03-27 (status: PASS).
 

@@ -375,19 +375,27 @@ _GH_API = "https://api.github.com"
 _GH_REPO = "LeonardoDaros/propetz-bi"
 _GH_STATE_BRANCH = "state"
 _STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json"]
+_GH_WRITE_LOCK = threading.Lock()  # serializa escritas de estado: evita corrida read-SHA/PUT entre threads
 
 def _gh_token():
+    """Lê o GITHUB_TOKEN dos secrets, limpando espaços e aspas acidentais
+    (erro de colagem comum). Token real não tem aspas/espaços, então isso é
+    seguro e evita 401 por causa de um caractere sobrando."""
     try:
-        return st.secrets.get("GITHUB_TOKEN", None)
+        raw = st.secrets.get("GITHUB_TOKEN", None)
     except Exception:
         return None
+    if not raw:
+        return None
+    t = str(raw).strip().strip('"').strip("'").strip()
+    return t or None
 
 def _gh_headers(token):
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
-def _gh_get_file(path, branch):
+def _gh_get_file(path, branch, token=None):
     """Lê um arquivo do repo. Retorna (bytes, sha) ou (None, None)."""
-    token = _gh_token()
+    token = token or _gh_token()
     if not token:
         return None, None
     try:
@@ -400,9 +408,9 @@ def _gh_get_file(path, branch):
         pass
     return None, None
 
-def _gh_ensure_state_branch():
+def _gh_ensure_state_branch(token=None):
     """Cria o branch 'state' a partir do main, se ainda não existir."""
-    token = _gh_token()
+    token = token or _gh_token()
     if not token:
         return False
     try:
@@ -422,15 +430,15 @@ def _gh_ensure_state_branch():
     except Exception:
         return False
 
-def _gh_put_file(path, content_bytes, message, branch):
+def _gh_put_file(path, content_bytes, message, branch, token=None):
     """Cria/atualiza um arquivo no repo. Retorna True se salvou."""
-    token = _gh_token()
+    token = token or _gh_token()
     if not token:
         return False
     try:
-        if branch == _GH_STATE_BRANCH and not _gh_ensure_state_branch():
+        if branch == _GH_STATE_BRANCH and not _gh_ensure_state_branch(token=token):
             return False
-        _, sha = _gh_get_file(path, branch)
+        _, sha = _gh_get_file(path, branch, token=token)
         payload = {"message": message,
                    "content": base64.b64encode(content_bytes).decode(),
                    "branch": branch}
@@ -444,8 +452,11 @@ def _gh_put_file(path, content_bytes, message, branch):
 
 def _push_state_file(filename):
     """Envia um arquivo de estado para o branch 'state' em segundo plano
-    (thread) para não travar a interface. Melhor esforço: falha silenciosa."""
-    if not _gh_token():
+    (thread) para não travar a interface. Melhor esforço: falha silenciosa.
+    O token é capturado AQUI (thread principal) e passado para a thread —
+    ler st.secrets de dentro da thread pode falhar fora do contexto Streamlit."""
+    token = _gh_token()
+    if not token:
         return
     local = os.path.join(os.path.dirname(__file__), filename)
     if not os.path.exists(local):
@@ -454,9 +465,103 @@ def _push_state_file(filename):
         content = f.read()
 
     def _send():
-        _gh_put_file(filename, content, f"Estado: {filename}", _GH_STATE_BRANCH)
+        # Lock serializa as escritas: sem ele, dois logins simultâneos podem ler o
+        # mesmo SHA e a 2ª gravação é rejeitada (409) e perdida em silêncio.
+        with _GH_WRITE_LOCK:
+            _gh_put_file(filename, content, f"Estado: {filename}", _GH_STATE_BRANCH, token=token)
 
     threading.Thread(target=_send, daemon=True).start()
+
+def _gh_diagnose():
+    """Diagnóstico SÍNCRONO da persistência. Retorna lista de
+    (ok: bool, título: str, detalhe: str) para exibir na página Admin.
+    Para no primeiro erro fatal — o último item indica onde quebrou."""
+    out = []
+    # 1) Ler secrets
+    try:
+        raw = st.secrets.get("GITHUB_TOKEN", None)
+    except Exception as e:
+        out.append((False, "Ler o campo Secrets",
+                    f"Falhou ao ler os secrets ({e}). Quase sempre é erro de formato (TOML): "
+                    "use aspas RETAS (\") e confira se não há outra linha quebrada no campo."))
+        return out
+    if not raw:
+        out.append((False, "Token presente nos Secrets",
+                    "GITHUB_TOKEN não foi encontrado. Confira: o nome é exatamente GITHUB_TOKEN; "
+                    "o valor está entre aspas retas (\"); e nenhuma outra linha do campo Secrets "
+                    "tem erro de formato (um erro em qualquer linha derruba TODOS os secrets)."))
+        return out
+    token = _gh_token()  # versão limpa (sem aspas/espaços)
+    raw_str = str(raw)
+    avisos = []
+    if raw_str != raw_str.strip():
+        avisos.append("tinha espaços/quebras de linha sobrando (removidos)")
+    if raw_str.strip() != token:
+        avisos.append("tinha aspas dentro do valor (removidas)")
+    forma = "ghp_/github_pat_" if token.startswith(("ghp_", "github_pat_")) else f"'{token[:4]}…'"
+    out.append((True, "Token presente",
+                f"{len(token)} caracteres, formato {forma}." +
+                (" ⚠️ Corrigido: " + "; ".join(avisos) if avisos else "")))
+    # 2) Token válido?
+    try:
+        r = requests.get(f"{_GH_API}/user", headers=_gh_headers(token), timeout=15)
+    except Exception as e:
+        out.append((False, "Conexão com o GitHub", f"Não consegui falar com a API do GitHub: {e}"))
+        return out
+    if r.status_code == 401:
+        out.append((False, "Token válido",
+                    "GitHub recusou (401): token inválido, expirado ou copiado pela metade. "
+                    "Gere um novo em github.com/settings/tokens e cole de novo."))
+        return out
+    if r.status_code != 200:
+        out.append((False, "Token válido", f"Resposta inesperada {r.status_code}: {r.text[:120]}"))
+        return out
+    out.append((True, "Token válido", f"Autenticado como '{r.json().get('login', '?')}'."))
+    # 3) Acesso ao repositório
+    r = requests.get(f"{_GH_API}/repos/{_GH_REPO}", headers=_gh_headers(token), timeout=15)
+    if r.status_code == 404:
+        out.append((False, "Acesso ao repositório",
+                    f"{_GH_REPO} não encontrado por este token. Em token clássico, marque o escopo "
+                    "'repo'. Em token fine-grained, dê acesso a ESTE repositório com permissão "
+                    "Contents: Read and write."))
+        return out
+    if r.status_code == 403:
+        out.append((False, "Acesso ao repositório", "Proibido (403): falta o escopo 'repo' no token."))
+        return out
+    if r.status_code != 200:
+        out.append((False, "Acesso ao repositório", f"Resposta {r.status_code}: {r.text[:120]}"))
+        return out
+    out.append((True, "Acesso ao repositório", f"{_GH_REPO} acessível."))
+    # 4) Branch 'state'
+    ok_branch = _gh_ensure_state_branch(token=token)
+    out.append((ok_branch, "Branch 'state'",
+                "Pronto." if ok_branch else "Não foi possível criar/verificar o branch 'state'."))
+    if not ok_branch:
+        return out
+    # 5) Escrita real no branch 'state' (MESMO caminho do salvamento de inativações/
+    #    usuários/log). Captura o status HTTP para dizer a causa exata se falhar.
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        _, sha = _gh_get_file("_diagnostico.txt", _GH_STATE_BRANCH, token=token)
+        payload = {"message": "Teste de persistência",
+                   "content": base64.b64encode(f"teste de escrita {stamp}".encode()).decode(),
+                   "branch": _GH_STATE_BRANCH}
+        if sha:
+            payload["sha"] = sha
+        rw = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/_diagnostico.txt",
+                          json=payload, headers=_gh_headers(token), timeout=30)
+        if rw.status_code in (200, 201):
+            out.append((True, "Escrita de teste (branch 'state')",
+                        "Gravado com sucesso. ✅ A persistência de inativações, usuários e log "
+                        "de acesso está FUNCIONANDO. (A planilha é salva no branch 'main' com o "
+                        "mesmo token e deve funcionar igual.)"))
+        else:
+            out.append((False, "Escrita de teste (branch 'state')",
+                        f"O token é válido e enxerga o repo, mas a GRAVAÇÃO falhou: "
+                        f"HTTP {rw.status_code} — {rw.text[:160]}"))
+    except Exception as e:
+        out.append((False, "Escrita de teste (branch 'state')", f"Falha na gravação: {e}"))
+    return out
 
 @st.cache_resource
 def _sync_state_from_github():
@@ -2703,6 +2808,30 @@ def page_admin():
 
     st.divider()
 
+    # ============================================================
+    # DIAGNÓSTICO DE PERSISTÊNCIA (GitHub)
+    # ============================================================
+    st.subheader("🔌 Persistência (salvamento permanente)")
+    if _gh_token():
+        st.caption("Há um token configurado. Clique para testar se ele realmente salva no GitHub — "
+                   "o teste tenta gravar um arquivo de verdade no branch 'state'.")
+    else:
+        st.warning("Nenhum token detectado nos secrets agora. Inativações, usuários e logs "
+                   "serão perdidos no próximo reinício. Configure o GITHUB_TOKEN (ver COMO-USAR.md) "
+                   "e use o botão abaixo para validar.")
+    if st.button("🔍 Testar conexão com o GitHub", key="btn_gh_diag"):
+        with st.spinner("Testando..."):
+            resultados = _gh_diagnose()
+        for ok, titulo, detalhe in resultados:
+            if ok:
+                st.success(f"**{titulo}** — {detalhe}")
+            else:
+                st.error(f"**{titulo}** — {detalhe}")
+        if resultados and resultados[-1][0] and 'Escrita' in resultados[-1][1]:
+            st.info("Tudo certo! Agora refaça as inativações uma vez — daqui em diante elas ficam permanentes.")
+
+    st.divider()
+
     # Upload new data
     st.subheader("Atualizar Base de Dados")
     if _gh_token():
@@ -3072,6 +3201,17 @@ def main():
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Alerta de persistência: sem GITHUB_TOKEN, inativações/usuários/logs são
+    # perdidos quando o servidor reinicia. Visível só para admin/diretor.
+    if has_full_data_access() and not _gh_token():
+        st.error(
+            "⚠️ **Persistência DESATIVADA.** As inativações de clientes, novos usuários e o "
+            "log de acessos ficam só na memória temporária do servidor e **são perdidos quando "
+            "ele reinicia**. Para tornar permanente, configure o `GITHUB_TOKEN` nos secrets do "
+            "Streamlit Cloud (passo a passo no COMO-USAR.md). Enquanto isso não for feito, evite "
+            "depender das inativações."
+        )
 
     # Route to page
     page = pages[selected_page]

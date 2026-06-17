@@ -1,1 +1,13 @@
-﻿{"requests": []}
+{
+ "requests": [
+  {
+   "client_id": "1338",
+   "client_name": "VIP PET SHOP COMERCIO ATACADISTA E VAREJISTA DE ARTIGOS PARA",
+   "vendor": "Cristiane La Maison Propetz",
+   "requested_by": "grasiele",
+   "requested_by_name": "Grasiele",
+   "date": "2026-06-17 19:01",
+   "status": "pendente"
+  }
+ ]
+}

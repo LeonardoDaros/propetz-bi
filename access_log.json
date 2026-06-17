@@ -78,5 +78,22 @@
   "timestamp": "2026-06-17 19:00:56",
   "date": "2026-06-17",
   "time": "19:00:56"
+ },
+ {
+  "user": "grasiele",
+  "name": "Grasiele",
+  "action": "login",
+  "timestamp": "2026-06-17 19:01:11",
+  "date": "2026-06-17",
+  "time": "19:01:11"
+ },
+ {
+  "user": "grasiele",
+  "name": "Grasiele",
+  "action": "page_view",
+  "page": "🎛️ Painel do Gestor",
+  "timestamp": "2026-06-17 19:01:11",
+  "date": "2026-06-17",
+  "time": "19:01:11"
  }
 ]

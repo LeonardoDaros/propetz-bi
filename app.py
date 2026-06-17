@@ -292,6 +292,11 @@ def has_full_data_access():
     """Returns True for admin and diretor roles (see all data, no vendor filter)."""
     return st.session_state.get('role') in ('admin', 'diretor')
 
+def can_approve_inactivations():
+    """Somente admin aprova/inativa/reativa direto. Diretor e vendedor SOLICITAM
+    (a diretora conhece a carteira de todos, então sugere; o admin decide)."""
+    return st.session_state.get('role') == 'admin'
+
 # ============================================================
 # INACTIVE CLIENTS DATABASE (stored in JSON - persists across sessions)
 # ============================================================
@@ -1215,26 +1220,67 @@ def page_manager(df, months, df_sku, products_df):
     st.subheader("🚨 Maiores Recuperações em Jogo")
     st.caption("Top 10 clientes ativos esfriando, da base inteira, por receita anual em jogo — cobre isso nas reuniões com o time.")
     risky = df[(df['risk'].isin(['Recuperação', 'Atenção'])) & (df['status'] == 'Ativo')].copy()
+    risky['_cid'] = risky['id'].astype(str).str.strip()
+    risky = risky[~risky['_cid'].isin(load_inactive_clients())]
     if len(risky) > 0:
+        _pend_ids_m = {r['client_id'] for r in pending_inactivation_requests()}
         risky['valor'] = risky['monthly'].apply(annual_value_estimate)
         risky['Prioridade'] = risky['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
-        risky = risky.sort_values('valor', ascending=False).head(10)
+        risky.loc[risky['_cid'].isin(_pend_ids_m), 'Prioridade'] = \
+            risky.loc[risky['_cid'].isin(_pend_ids_m), 'Prioridade'] + ' ⏳'
+        risky = risky.sort_values('valor', ascending=False).head(10).reset_index(drop=True)
         disp_r = risky[['Prioridade', 'name', 'vendor', 'state', 'last_purchase', 'months_since', 'valor']].copy()
         disp_r['vendor'] = disp_r['vendor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
         disp_r.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra', 'Meses', 'R$ em Jogo (ano)']
-        show_money_table(disp_r, ['R$ em Jogo (ano)'], use_container_width=True, hide_index=True,
-                         height=min(400, 35 * len(disp_r) + 38))
+        ev_r = show_money_table(disp_r, ['R$ em Jogo (ano)'], use_container_width=True, hide_index=True,
+                                height=min(400, 35 * len(disp_r) + 38),
+                                on_select="rerun", selection_mode="multi-row", key="mgr_risky_sel")
+        _act = "Marque a caixinha na linha para inativar" if can_approve_inactivations() \
+            else "Cliente fechou? Marque a caixinha na linha para sugerir a inativação"
+        st.caption(f"☑️ {_act}. ⏳ = já há uma solicitação pendente.")
+        try:
+            _rows = list(ev_r.selection.rows) if ev_r and ev_r.selection and ev_r.selection.rows else []
+        except Exception:
+            _rows = []
+        if _rows:
+            _sel = risky.iloc[_rows]
+            _prev = ", ".join(_sel['name'].head(3).tolist()) + ("…" if len(_sel) > 3 else "")
+            if can_approve_inactivations():
+                if st.button(f"🚫 Inativar {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
+                    _ic = load_inactive_clients()
+                    for _, rw in _sel.iterrows():
+                        _ic.add(rw['_cid'])
+                    save_inactive_clients(_ic)
+                    st.success(f"{len(_rows)} cliente(s) inativado(s).")
+                    st.rerun()
+            else:
+                if st.button(f"📨 Sugerir inativação de {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
+                    _s = 0
+                    for _, rw in _sel.iterrows():
+                        if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
+                            _s += 1
+                    st.success(f"{_s} sugestão(ões) enviada(s) para aprovação do administrador.")
+                    st.rerun()
     else:
         st.success("Nenhum cliente ativo em risco no momento.")
 
     st.divider()
 
-    # ---- LINHA 4: SOLICITAÇÕES DE INATIVAÇÃO (aprovar/rejeitar) ----
+    # ---- LINHA 4: SOLICITAÇÕES DE INATIVAÇÃO ----
+    # Admin aprova/rejeita; diretora vê a fila como informativa (ela sugere, não decide).
+    _can_approve = can_approve_inactivations()
     st.subheader("📋 Solicitações de Inativação")
     reqs = load_inactive_requests()
     pend = [r for r in reqs if r.get('status') == 'pendente']
     if not pend:
         st.caption("Nenhuma solicitação pendente.")
+    elif not _can_approve:
+        st.caption("Solicitações aguardando aprovação do administrador. Você pode sugerir novas "
+                   "inativações nas tabelas abaixo e nas páginas de Ações e Churn.")
+        for r in pend:
+            _vend_short = r.get('vendor', '').replace(' Propetz Distribuição', '').replace(' La Maison Propetz', '')
+            st.markdown(f"⏳ **{r['client_name']}** ({_vend_short}) — solicitado por "
+                        f"*{r.get('requested_by_name', '?')}* em {r.get('date', '')}")
     else:
         st.caption("Aprovando, o cliente sai das listas de ação e churn de todo o time. "
                    "Rejeitando, ele continua como está.")
@@ -1266,12 +1312,17 @@ def page_manager(df, months, df_sku, products_df):
                 st.markdown(f"{_icon} **{r['client_name']}** — {r['status']} em {r.get('decidido_em', '')} "
                             f"(solicitado por {r.get('requested_by_name', '?')})")
 
-    # Reativação de clientes inativados
+    # Reativação de clientes inativados (somente admin)
     inact_ids = load_inactive_clients()
     _df_inact = df[df['id'].astype(str).str.strip().isin(inact_ids)]
-    with st.expander(f"♻️ Clientes inativados ({len(inact_ids)}) — reativar"):
+    with st.expander(f"♻️ Clientes inativados ({len(inact_ids)})" + (" — reativar" if _can_approve else "")):
         if len(_df_inact) == 0:
             st.caption("Nenhum cliente inativado.")
+        elif not _can_approve:
+            st.caption("Reativação é feita pelo administrador.")
+            st.dataframe(_df_inact[['name', 'vendor', 'state']].rename(
+                columns={'name': 'Cliente', 'vendor': 'Vendedor', 'state': 'UF'}),
+                use_container_width=True, hide_index=True)
         else:
             sel_react = st.multiselect("Selecione para reativar:",
                                        sorted(_df_inact['name'].tolist()), key="mgr_react")
@@ -1445,7 +1496,7 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         if _sel_rows:
             _sel_clients = top_calls.iloc[_sel_rows]
             _names_prev = ", ".join(_sel_clients['name'].head(3).tolist()) + ("…" if len(_sel_clients) > 3 else "")
-            if has_full_data_access():
+            if can_approve_inactivations():
                 if st.button(f"🚫 Inativar {len(_sel_rows)} selecionado(s): {_names_prev}",
                              key="btn_inact_inline", type="primary"):
                     _inact = load_inactive_clients()
@@ -1474,8 +1525,8 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         _csv_download(export_calls, "⬇️ Baixar lista de contatos (Excel/CSV)",
                       "contatos_prioritarios.csv", "dl_calls")
 
-    # ---- SOLICITAR INATIVAÇÃO (vendedor pede, admin aprova) ----
-    if not has_full_data_access():
+    # ---- SOLICITAR INATIVAÇÃO (vendedor/diretora pedem, admin aprova) ----
+    if not can_approve_inactivations():
         with st.expander("🚫 Solicitar inativação de cliente FORA da lista acima"):
             st.caption("Para os clientes da tabela, use a caixinha de seleção na própria linha. "
                        "A solicitação vai para aprovação do administrador — até lá, o cliente continua nas listas.")
@@ -2343,7 +2394,7 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
         data = data.sort_values('total_rev', ascending=False)
 
         # Multiselect to choose clients to inactivate
-        _is_full = has_full_data_access()
+        _is_full = can_approve_inactivations()
         client_names = data['name'].tolist()
         selected_to_inactivate = st.multiselect(
             "Selecione clientes para INATIVAR:" if _is_full else "Selecione clientes para SOLICITAR inativação:",
@@ -2422,8 +2473,8 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             df_inactive['vendor_short'] = df_inactive['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
             df_inactive_sorted = df_inactive.sort_values('name')
 
-            # Multiselect to reactivate (somente admin/diretor)
-            if has_full_data_access():
+            # Multiselect to reactivate (somente admin)
+            if can_approve_inactivations():
                 inactive_names = df_inactive_sorted['name'].tolist()
                 selected_to_reactivate = st.multiselect(
                     "Selecione clientes para REATIVAR:",

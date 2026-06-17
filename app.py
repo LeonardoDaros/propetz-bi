@@ -1328,44 +1328,57 @@ def page_manager(df, months, df_sku, products_df):
     risky['_cid'] = risky['id'].astype(str).str.strip()
     risky = risky[~risky['_cid'].isin(load_inactive_clients())]
     if len(risky) > 0:
+        _busca_m = st.text_input("🔍 Buscar cliente (nome, UF, vendedor ou código)", key="mgr_risky_search",
+                                 placeholder="Digite parte do nome para achar qualquer cliente em risco...")
         _pend_ids_m = {r['client_id'] for r in pending_inactivation_requests()}
         risky['valor'] = risky['monthly'].apply(annual_value_estimate)
         risky['Prioridade'] = risky['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
         risky.loc[risky['_cid'].isin(_pend_ids_m), 'Prioridade'] = \
             risky.loc[risky['_cid'].isin(_pend_ids_m), 'Prioridade'] + ' ⏳'
-        risky = risky.sort_values('valor', ascending=False).head(10).reset_index(drop=True)
-        disp_r = risky[['Prioridade', 'name', 'vendor', 'state', 'last_purchase', 'months_since', 'valor']].copy()
-        disp_r['vendor'] = disp_r['vendor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
-        disp_r.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra', 'Meses', 'R$ em Jogo (ano)']
-        ev_r = show_money_table(disp_r, ['R$ em Jogo (ano)'], use_container_width=True, hide_index=True,
-                                height=min(400, 35 * len(disp_r) + 38),
-                                on_select="rerun", selection_mode="multi-row", key="mgr_risky_sel")
-        _act = "Marque a caixinha na linha para inativar" if can_approve_inactivations() \
-            else "Cliente fechou? Marque a caixinha na linha para sugerir a inativação"
-        st.caption(f"☑️ {_act}. ⏳ = já há uma solicitação pendente.")
-        try:
-            _rows = list(ev_r.selection.rows) if ev_r and ev_r.selection and ev_r.selection.rows else []
-        except Exception:
-            _rows = []
-        if _rows:
-            _sel = risky.iloc[_rows]
-            _prev = ", ".join(_sel['name'].head(3).tolist()) + ("…" if len(_sel) > 3 else "")
-            if can_approve_inactivations():
-                if st.button(f"🚫 Inativar {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
-                    _ic = load_inactive_clients()
-                    for _, rw in _sel.iterrows():
-                        _ic.add(rw['_cid'])
-                    save_inactive_clients(_ic)
-                    st.success(f"{len(_rows)} cliente(s) inativado(s).")
-                    st.rerun()
-            else:
-                if st.button(f"📨 Sugerir inativação de {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
-                    _s = 0
-                    for _, rw in _sel.iterrows():
-                        if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
-                            _s += 1
-                    st.success(f"{_s} sugestão(ões) enviada(s) para aprovação do administrador.")
-                    st.rerun()
+        risky = risky.sort_values('valor', ascending=False)
+        # Sem busca: top 10. Com busca: TODOS os que casam (da base inteira em risco).
+        if _busca_m and str(_busca_m).strip():
+            risky = _filter_clients_by_term(risky, _busca_m).reset_index(drop=True)
+            _nota_m = f"{len(risky)} resultado(s) para “{_busca_m}”."
+        else:
+            risky = risky.head(10).reset_index(drop=True)
+            _nota_m = "Top 10 por valor — use a busca acima para achar qualquer outro cliente em risco."
+        if len(risky) == 0:
+            st.info("Nenhum cliente encontrado com esse termo.")
+        else:
+            disp_r = risky[['Prioridade', 'name', 'vendor', 'state', 'last_purchase', 'months_since', 'valor']].copy()
+            disp_r['vendor'] = disp_r['vendor'].str.replace(' Propetz Distribuição', '').str.replace(' La Maison Propetz', '')
+            disp_r.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra', 'Meses', 'R$ em Jogo (ano)']
+            ev_r = show_money_table(disp_r, ['R$ em Jogo (ano)'], use_container_width=True, hide_index=True,
+                                    height=min(400, 35 * len(disp_r) + 38),
+                                    on_select="rerun", selection_mode="multi-row", key="mgr_risky_sel")
+            _act = "Marque a caixinha na linha para inativar" if can_approve_inactivations() \
+                else "Cliente fechou? Marque a caixinha na linha para sugerir a inativação"
+            st.caption(f"☑️ {_act}. ⏳ = já há uma solicitação pendente.")
+            try:
+                _rows = list(ev_r.selection.rows) if ev_r and ev_r.selection and ev_r.selection.rows else []
+            except Exception:
+                _rows = []
+            if _rows:
+                _sel = risky.iloc[_rows]
+                _prev = ", ".join(_sel['name'].head(3).tolist()) + ("…" if len(_sel) > 3 else "")
+                if can_approve_inactivations():
+                    if st.button(f"🚫 Inativar {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
+                        _ic = load_inactive_clients()
+                        for _, rw in _sel.iterrows():
+                            _ic.add(rw['_cid'])
+                        save_inactive_clients(_ic)
+                        st.success(f"{len(_rows)} cliente(s) inativado(s).")
+                        st.rerun()
+                else:
+                    if st.button(f"📨 Sugerir inativação de {len(_rows)} selecionado(s): {_prev}", key="mgr_inact_btn", type="primary"):
+                        _s = 0
+                        for _, rw in _sel.iterrows():
+                            if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
+                                _s += 1
+                        st.success(f"{_s} sugestão(ões) enviada(s) para aprovação do administrador.")
+                        st.rerun()
+            st.caption(_nota_m)
     else:
         st.success("Nenhum cliente ativo em risco no momento.")
 
@@ -1481,6 +1494,19 @@ def _csv_download(df_export, label, filename, key):
     csv_bytes = df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
     st.download_button(label, csv_bytes, file_name=filename, mime="text/csv", key=key)
 
+def _filter_clients_by_term(df, term, name_col='name', vendor_col='vendor', state_col='state', id_col='id'):
+    """Filtra um DataFrame de clientes por nome, UF, vendedor ou código.
+    Termo vazio devolve o df inteiro. Busca sem acento/maiúscula."""
+    if not term or not str(term).strip():
+        return df
+    s = str(term).strip().lower()
+    mask = None
+    for col in (name_col, vendor_col, state_col, id_col):
+        if col and col in df.columns:
+            m = df[col].astype(str).str.lower().str.contains(s, na=False, regex=False)
+            mask = m if mask is None else (mask | m)
+    return df[mask] if mask is not None else df
+
 def page_actions(df, df_sku, products_df, df_client_products, months):
     st.header("✅ Minhas Ações")
     st.caption(f"Sua lista de trabalho priorizada — dados até {months[-1]}. "
@@ -1577,50 +1603,63 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
     if len(calls) == 0:
         st.success("Nenhum cliente esfriando na carteira. Foque nas ofertas abaixo!")
     else:
-        top_calls = calls.head(20).copy()
-        _pend_ids = {r['client_id'] for r in pending_inactivation_requests()}
-        top_calls['Prioridade'] = top_calls['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
-        # ⏳ = já existe solicitação de inativação aguardando aprovação
-        top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] = \
-            top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] + ' ⏳'
-        top_calls['Sempre Comprou'] = top_calls['_cid'].map(fav).fillna('—')
-        top_calls = top_calls.reset_index(drop=True)
-        disp_calls = top_calls[['Prioridade', 'name', 'vendor_short', 'state', 'last_purchase',
-                                'months_since', 'valor_anual', 'Sempre Comprou']].copy()
-        disp_calls.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra',
-                              'Meses sem Comprar', 'Valor Anual Est.', 'Sempre Comprou']
-        ev = show_money_table(disp_calls, ['Valor Anual Est.'], use_container_width=True, hide_index=True,
-                              height=min(500, 35 * len(disp_calls) + 38),
-                              on_select="rerun", selection_mode="multi-row", key="calls_sel")
-        st.caption("☑️ Cliente fechou ou não existe mais? Marque a caixinha à esquerda da linha "
-                   "e use o botão que aparece abaixo. ⏳ = solicitação já enviada.")
-        try:
-            _sel_rows = list(ev.selection.rows) if ev and ev.selection and ev.selection.rows else []
-        except Exception:
-            _sel_rows = []
-        if _sel_rows:
-            _sel_clients = top_calls.iloc[_sel_rows]
-            _names_prev = ", ".join(_sel_clients['name'].head(3).tolist()) + ("…" if len(_sel_clients) > 3 else "")
-            if can_approve_inactivations():
-                if st.button(f"🚫 Inativar {len(_sel_rows)} selecionado(s): {_names_prev}",
-                             key="btn_inact_inline", type="primary"):
-                    _inact = load_inactive_clients()
-                    for _, rw in _sel_clients.iterrows():
-                        _inact.add(rw['_cid'])
-                    save_inactive_clients(_inact)
-                    st.success(f"{len(_sel_rows)} cliente(s) inativado(s).")
-                    st.rerun()
-            else:
-                if st.button(f"📨 Solicitar inativação de {len(_sel_rows)} selecionado(s): {_names_prev}",
-                             key="btn_inact_inline", type="primary"):
-                    _sent = 0
-                    for _, rw in _sel_clients.iterrows():
-                        if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
-                            _sent += 1
-                    st.success(f"{_sent} solicitação(ões) enviada(s) para aprovação do administrador.")
-                    st.rerun()
-        if len(calls) > 20:
-            st.caption(f"Mostrando os 20 principais de {len(calls)} clientes esfriando. Baixe a lista completa abaixo.")
+        _busca = st.text_input("🔍 Buscar cliente na lista (nome, UF, vendedor ou código)", key="calls_search",
+                               placeholder="Digite parte do nome para encontrar qualquer cliente da lista...")
+        _calls_f = _filter_clients_by_term(calls, _busca)
+        # Sem busca: mostra os 20 maiores. Com busca: mostra TODOS os que casam.
+        if _busca and str(_busca).strip():
+            top_calls = _calls_f.copy()
+            _nota = f"{len(top_calls)} resultado(s) para “{_busca}”."
+        else:
+            top_calls = calls.head(20).copy()
+            _nota = (f"Mostrando os 20 maiores de {len(calls)} clientes esfriando — "
+                     "use a busca acima para achar qualquer outro." if len(calls) > 20 else "")
+        if len(top_calls) == 0:
+            st.info("Nenhum cliente encontrado com esse termo.")
+        else:
+            _pend_ids = {r['client_id'] for r in pending_inactivation_requests()}
+            top_calls['Prioridade'] = top_calls['risk'].map({'Recuperação': '🔴 Urgente', 'Atenção': '🟡 Atenção'})
+            # ⏳ = já existe solicitação de inativação aguardando aprovação
+            top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] = \
+                top_calls.loc[top_calls['_cid'].isin(_pend_ids), 'Prioridade'] + ' ⏳'
+            top_calls['Sempre Comprou'] = top_calls['_cid'].map(fav).fillna('—')
+            top_calls = top_calls.reset_index(drop=True)
+            disp_calls = top_calls[['Prioridade', 'name', 'vendor_short', 'state', 'last_purchase',
+                                    'months_since', 'valor_anual', 'Sempre Comprou']].copy()
+            disp_calls.columns = ['Prioridade', 'Cliente', 'Vendedor', 'UF', 'Última Compra',
+                                  'Meses sem Comprar', 'Valor Anual Est.', 'Sempre Comprou']
+            ev = show_money_table(disp_calls, ['Valor Anual Est.'], use_container_width=True, hide_index=True,
+                                  height=min(500, 35 * len(disp_calls) + 38),
+                                  on_select="rerun", selection_mode="multi-row", key="calls_sel")
+            st.caption("☑️ Cliente fechou ou não existe mais? Marque a caixinha à esquerda da linha "
+                       "e use o botão que aparece abaixo. ⏳ = solicitação já enviada.")
+            try:
+                _sel_rows = list(ev.selection.rows) if ev and ev.selection and ev.selection.rows else []
+            except Exception:
+                _sel_rows = []
+            if _sel_rows:
+                _sel_clients = top_calls.iloc[_sel_rows]
+                _names_prev = ", ".join(_sel_clients['name'].head(3).tolist()) + ("…" if len(_sel_clients) > 3 else "")
+                if can_approve_inactivations():
+                    if st.button(f"🚫 Inativar {len(_sel_rows)} selecionado(s): {_names_prev}",
+                                 key="btn_inact_inline", type="primary"):
+                        _inact = load_inactive_clients()
+                        for _, rw in _sel_clients.iterrows():
+                            _inact.add(rw['_cid'])
+                        save_inactive_clients(_inact)
+                        st.success(f"{len(_sel_rows)} cliente(s) inativado(s).")
+                        st.rerun()
+                else:
+                    if st.button(f"📨 Solicitar inativação de {len(_sel_rows)} selecionado(s): {_names_prev}",
+                                 key="btn_inact_inline", type="primary"):
+                        _sent = 0
+                        for _, rw in _sel_clients.iterrows():
+                            if add_inactivation_request(rw['_cid'], rw['name'], rw['vendor']):
+                                _sent += 1
+                        st.success(f"{_sent} solicitação(ões) enviada(s) para aprovação do administrador.")
+                        st.rerun()
+            if _nota:
+                st.caption(_nota)
 
         export_calls = calls[['name', 'vendor_short', 'state', 'risk', 'last_purchase',
                               'months_since', 'valor_anual']].copy()
@@ -2498,6 +2537,14 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
         data['vendor_short'] = data['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
         data = data.sort_values('total_rev', ascending=False)
 
+        # Busca: filtra a tabela E o seletor de inativação ao mesmo tempo
+        _busca_c = st.text_input("🔍 Buscar cliente (nome, UF, vendedor ou código)", key=f"churn_search_{tab_key}",
+                                 placeholder="Digite parte do nome para filtrar a lista...")
+        data = _filter_clients_by_term(data, _busca_c)
+        if len(data) == 0:
+            st.info("Nenhum cliente encontrado com esse termo.")
+            return
+
         # Multiselect to choose clients to inactivate
         _is_full = can_approve_inactivations()
         client_names = data['name'].tolist()
@@ -2577,6 +2624,13 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             df_inactive['total_rev'] = df_inactive['monthly'].apply(_period_sum)
             df_inactive['vendor_short'] = df_inactive['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
             df_inactive_sorted = df_inactive.sort_values('name')
+
+            _busca_i = st.text_input("🔍 Buscar cliente inativado (nome, UF, vendedor ou código)", key="inativ_search",
+                                     placeholder="Digite parte do nome para filtrar...")
+            df_inactive_sorted = _filter_clients_by_term(df_inactive_sorted, _busca_i)
+            if len(df_inactive_sorted) == 0:
+                st.info("Nenhum cliente inativado encontrado com esse termo.")
+                return
 
             # Multiselect to reactivate (somente admin)
             if can_approve_inactivations():

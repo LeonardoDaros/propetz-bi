@@ -1,23 +1,17 @@
 {
  "requests": [
   {
-   "client_id": "1338",
-   "client_name": "VIP PET SHOP COMERCIO ATACADISTA E VAREJISTA DE ARTIGOS PARA",
-   "vendor": "Cristiane La Maison Propetz",
-   "requested_by": "grasiele",
-   "requested_by_name": "Grasiele",
-   "date": "2026-06-17 19:01",
+   "client_id": "1063",
+   "client_name": "Lanca Bichos LTDA",
+   "vendor": "Yasmin Propetz Distribuição",
+   "motivo": "Trocou por concorrente / outro fornecedor",
+   "observacao": "",
+   "requested_by": "leonardo",
+   "requested_by_name": "Leonardo Daros",
+   "date": "2026-06-17 21:01",
    "status": "aprovado",
-   "decidido_em": "2026-06-17 19:02"
-  },
-  {
-   "client_id": "1118",
-   "client_name": "ANDRE HENRIQUE FURTADO",
-   "vendor": "Emanuel Propetz Distribuição",
-   "requested_by": "grasiele",
-   "requested_by_name": "Grasiele",
-   "date": "2026-06-17 19:35",
-   "status": "pendente"
+   "decidido_em": "2026-06-17 21:01",
+   "decidido_por": "Leonardo Daros"
   }
  ]
 }

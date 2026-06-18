@@ -302,22 +302,58 @@ def can_approve_inactivations():
 # ============================================================
 INACTIVE_FILE = os.path.join(os.path.dirname(__file__), "inactive_clients.json")
 
-def load_inactive_clients():
-    """Load set of inactive client IDs from JSON file."""
-    if os.path.exists(INACTIVE_FILE):
+# Memo por script-run: lê o GitHub no máximo 1x por arquivo por rerun (esvaziado
+# no início do main() e após cada gravação). Evita N chamadas de rede por render.
+_STATE_RAW_CACHE = {}
+
+def _read_state_raw(remote_name, local_path):
+    """Conteúdo bruto do arquivo de estado, tendo o branch 'state' do GitHub como
+    FONTE DA VERDADE (quando há token). Cai para o arquivo local só se não houver
+    token ou a leitura remota falhar. É isto que impede um boot ruim de levar a uma
+    gravação destrutiva: sempre lemos o estado bom do GitHub antes de modificar."""
+    if remote_name in _STATE_RAW_CACHE:
+        return _STATE_RAW_CACHE[remote_name]
+    raw = None
+    tok = _gh_token()
+    if tok:
         try:
-            with open(INACTIVE_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return set(data.get("inactive_ids", []))
+            content, _ = _gh_get_file(remote_name, _GH_STATE_BRANCH, token=tok)
+            if content is not None:
+                raw = content.decode('utf-8')
         except Exception:
-            return set()
-    return set()
+            raw = None
+    if raw is None and os.path.exists(local_path):
+        try:
+            with open(local_path, 'r', encoding='utf-8') as f:
+                raw = f.read()
+        except Exception:
+            raw = None
+    _STATE_RAW_CACHE[remote_name] = raw
+    return raw
+
+def _read_state_json(remote_name, local_path, default):
+    raw = _read_state_raw(remote_name, local_path)
+    if raw:
+        try:
+            return json.loads(raw)  # objeto novo a cada chamada (callers podem mutar)
+        except Exception:
+            pass
+    return default
+
+def load_inactive_clients():
+    """Conjunto de IDs inativos — lido do GitHub (fonte da verdade) com fallback local."""
+    data = _read_state_json("inactive_clients.json", INACTIVE_FILE, {"inactive_ids": []})
+    try:
+        return set(data.get("inactive_ids", []))
+    except Exception:
+        return set()
 
 def save_inactive_clients(inactive_set):
-    """Save set of inactive client IDs to JSON file."""
+    """Grava o conjunto de IDs inativos (local + GitHub SÍNCRONO, com confirmação)."""
     with open(INACTIVE_FILE, 'w', encoding='utf-8') as f:
         json.dump({"inactive_ids": sorted(list(inactive_set))}, f, ensure_ascii=False, indent=2)
-    _push_state_file("inactive_clients.json")
+    _STATE_RAW_CACHE.pop("inactive_clients.json", None)
+    _push_state_file("inactive_clients.json", sync=True)
     return None
 
 # ============================================================
@@ -326,19 +362,18 @@ def save_inactive_clients(inactive_set):
 INACTIVE_REQUESTS_FILE = os.path.join(os.path.dirname(__file__), "inactive_requests.json")
 
 def load_inactive_requests():
-    """Lista de solicitações de inativação (pendentes e decididas)."""
-    if os.path.exists(INACTIVE_REQUESTS_FILE):
-        try:
-            with open(INACTIVE_REQUESTS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f).get("requests", [])
-        except Exception:
-            return []
-    return []
+    """Solicitações/decisões de inativação — GitHub como fonte da verdade, fallback local."""
+    data = _read_state_json("inactive_requests.json", INACTIVE_REQUESTS_FILE, {"requests": []})
+    try:
+        return data.get("requests", [])
+    except Exception:
+        return []
 
 def save_inactive_requests(reqs):
     with open(INACTIVE_REQUESTS_FILE, 'w', encoding='utf-8') as f:
         json.dump({"requests": reqs[-500:]}, f, ensure_ascii=False, indent=1)
-    _push_state_file("inactive_requests.json")
+    _STATE_RAW_CACHE.pop("inactive_requests.json", None)
+    _push_state_file("inactive_requests.json", sync=True)
 
 # Motivos padronizados (geram um banco analisável; "Outro" + observação cobre o resto)
 MOTIVOS_INATIVACAO = [
@@ -351,45 +386,89 @@ MOTIVOS_INATIVACAO = [
     "Outro",
 ]
 
+def inactivate_clients(cids):
+    """Adiciona IDs ao conjunto de inativos de forma ATÔMICA (não apaga os demais,
+    mesmo com inativações simultâneas). Retorna True se persistiu de fato."""
+    cset = {str(c).strip() for c in cids if str(c).strip()}
+    if not cset:
+        return True
+    _, ok = _gh_mutate_json("inactive_clients.json", INACTIVE_FILE,
+        lambda d: {"inactive_ids": sorted(set(d.get("inactive_ids", [])) | cset)},
+        {"inactive_ids": []})
+    return ok
+
+def reactivate_clients(cids):
+    """Remove IDs do conjunto de inativos de forma ATÔMICA. Retorna True se persistiu."""
+    cset = {str(c).strip() for c in cids if str(c).strip()}
+    if not cset:
+        return True
+    _, ok = _gh_mutate_json("inactive_clients.json", INACTIVE_FILE,
+        lambda d: {"inactive_ids": sorted(set(d.get("inactive_ids", [])) - cset)},
+        {"inactive_ids": []})
+    return ok
+
 def add_inactivation_request(client_id, client_name, vendor, motivo="", observacao="", direct_approve=False):
-    """Registra a inativação com motivo. Vendedor/diretora → 'pendente' (admin aprova).
-    Admin (direct_approve) → já entra 'aprovado' e o cliente é inativado na hora.
-    Retorna False se vendedor tenta duplicar uma solicitação já pendente."""
-    reqs = load_inactive_requests()
+    """Registra a inativação com motivo (gravação ATÔMICA). Vendedor/diretora →
+    'pendente' (admin aprova). Admin (direct_approve) → 'aprovado' + inativa na hora.
+    Retorna True se a ação foi aplicada E persistida; False se duplicada ou se a
+    gravação no GitHub falhou (aí o chamador avisa o usuário)."""
     cid = str(client_id).strip()
-    existing_pending = next((r for r in reqs
-                             if r.get("client_id") == cid and r.get("status") == "pendente"), None)
-    if existing_pending and not direct_approve:
-        return False
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    if direct_approve:
-        inact = load_inactive_clients()
-        inact.add(cid)
-        save_inactive_clients(inact)
-        if existing_pending:
-            # aprova a solicitação que já existia (preserva quem pediu e o motivo original)
-            existing_pending["status"] = "aprovado"
-            existing_pending["decidido_em"] = now
-            existing_pending["decidido_por"] = st.session_state.get("user_name", "")
-            save_inactive_requests(reqs)
-            return True
-    rec = {
-        "client_id": cid,
-        "client_name": str(client_name),
-        "vendor": str(vendor or ""),
-        "motivo": str(motivo or "").strip(),
-        "observacao": str(observacao or "").strip(),
-        "requested_by": st.session_state.get("username", ""),
-        "requested_by_name": st.session_state.get("user_name", ""),
-        "date": now,
-        "status": "aprovado" if direct_approve else "pendente",
-    }
-    if direct_approve:
-        rec["decidido_em"] = now
-        rec["decidido_por"] = st.session_state.get("user_name", "")
-    reqs.append(rec)
-    save_inactive_requests(reqs)
-    return True
+    user = st.session_state.get("username", "")
+    uname = st.session_state.get("user_name", "")
+    flags = {}
+
+    def apply(d):
+        flags["dup"] = False  # reseta a CADA tentativa (apply roda de novo em retry/409)
+        reqs = list(d.get("requests", []))
+        existing = next((r for r in reqs
+                         if r.get("client_id") == cid and r.get("status") == "pendente"), None)
+        if not direct_approve and existing:
+            flags["dup"] = True
+            return {"requests": reqs[-500:]}  # vendedor: já há pendente, nada muda
+        if direct_approve and existing:
+            existing["status"] = "aprovado"
+            existing["decidido_em"] = now
+            existing["decidido_por"] = uname
+            return {"requests": reqs[-500:]}
+        rec = {
+            "client_id": cid, "client_name": str(client_name), "vendor": str(vendor or ""),
+            "motivo": str(motivo or "").strip(), "observacao": str(observacao or "").strip(),
+            "requested_by": user, "requested_by_name": uname, "date": now,
+            "status": "aprovado" if direct_approve else "pendente",
+        }
+        if direct_approve:
+            rec["decidido_em"] = now
+            rec["decidido_por"] = uname
+        reqs.append(rec)
+        return {"requests": reqs[-500:]}
+
+    ok_client = inactivate_clients([cid]) if direct_approve else True
+    _, ok_req = _gh_mutate_json("inactive_requests.json", INACTIVE_REQUESTS_FILE, apply, {"requests": []})
+    if flags.get("dup"):
+        return False  # já existia pendente (não é falha de gravação)
+    return ok_req and ok_client
+
+def decide_inactivation_request(client_id, approve, decided_by):
+    """Aprova/rejeita uma solicitação pendente de forma ATÔMICA. Se aprova, inativa
+    o cliente (também atômico). Retorna True se persistiu."""
+    cid = str(client_id).strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    status = "aprovado" if approve else "rejeitado"
+
+    def apply(d):
+        reqs = list(d.get("requests", []))
+        for r in reqs:
+            if r.get("client_id") == cid and r.get("status") == "pendente":
+                r["status"] = status
+                r["decidido_em"] = now
+                r["decidido_por"] = decided_by
+                break
+        return {"requests": reqs[-500:]}
+
+    ok_client = inactivate_clients([cid]) if approve else True
+    _, ok_req = _gh_mutate_json("inactive_requests.json", INACTIVE_REQUESTS_FILE, apply, {"requests": []})
+    return ok_req and ok_client
 
 def pending_inactivation_requests():
     return [r for r in load_inactive_requests() if r.get("status") == "pendente"]
@@ -490,11 +569,86 @@ def _gh_put_file(path, content_bytes, message, branch, token=None):
     except Exception:
         return False
 
-def _push_state_file(filename):
-    """Envia um arquivo de estado para o branch 'state' em segundo plano
-    (thread) para não travar a interface. Melhor esforço: falha silenciosa.
-    O token é capturado AQUI (thread principal) e passado para a thread —
-    ler st.secrets de dentro da thread pode falhar fora do contexto Streamlit."""
+def _gh_put_file_status(path, content_bytes, message, branch, sha, token):
+    """PUT com SHA explícito (concorrência otimista do GitHub). Retorna (ok, status).
+    Status 409 = o arquivo mudou desde o SHA lido (outra gravação entrou no meio)."""
+    try:
+        payload = {"message": message, "content": base64.b64encode(content_bytes).decode(), "branch": branch}
+        if sha:
+            payload["sha"] = sha
+        r = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                         json=payload, headers=_gh_headers(token), timeout=30)
+        return (r.status_code in (200, 201), r.status_code)
+    except Exception:
+        return (False, 0)
+
+def _write_local_json(local_path, data):
+    try:
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+def _gh_mutate_json(remote_name, local_path, apply_fn, default):
+    """READ-MODIFY-WRITE ATÔMICO do estado no branch 'state'. Retorna (dados, ok):
+    - lê o remoto FRESCO (conteúdo + SHA), aplica apply_fn(dados)->novos_dados, grava
+      com aquele SHA. Se outra gravação entrou no meio (409), RE-LÊ e repete (até 5x) —
+      duas inativações simultâneas NÃO se sobrescrevem.
+    - ok=True só se REALMENTE persistiu (ou foi no-op). Se falhou (GitHub fora/token
+      inválido), ok=False e NÃO grava local — para não dar falsa sensação de salvo.
+    - sem token: modo local (ok=True, melhor esforço offline).
+    Serializa no processo via _GH_WRITE_LOCK; o retry cobre concorrência entre containers."""
+    tok = _gh_token()
+    if not tok:
+        cur = default
+        if os.path.exists(local_path):
+            try:
+                with open(local_path, encoding='utf-8') as f:
+                    cur = json.load(f)
+            except Exception:
+                cur = default
+        new = apply_fn(cur)
+        _write_local_json(local_path, new)
+        _STATE_RAW_CACHE.pop(remote_name, None)
+        return new, True
+    with _GH_WRITE_LOCK:
+        new, ok = None, False
+        for _ in range(5):
+            content, sha = _gh_get_file(remote_name, _GH_STATE_BRANCH, token=tok)
+            if content is not None:
+                try:
+                    cur = json.loads(content.decode('utf-8'))
+                except Exception:
+                    cur = default
+            else:
+                _gh_ensure_state_branch(token=tok)  # arquivo/branch ainda não existe
+                cur, sha = default, None
+            # snapshot ANTES do apply: o apply pode mutar registros no lugar (ex.: mudar
+            # status para 'aprovado'), e aí comparar new==cur falharia em detectar a mudança
+            before = json.dumps(cur, sort_keys=True, ensure_ascii=False) if content is not None else None
+            new = apply_fn(cur)
+            if before is not None and json.dumps(new, sort_keys=True, ensure_ascii=False) == before:
+                ok = True  # nada mudou de fato (ex.: já inativo, ou duplicata) → já persistido
+                break
+            body = json.dumps(new, ensure_ascii=False, indent=1).encode('utf-8')
+            done, status = _gh_put_file_status(remote_name, body, f"Estado: {remote_name}",
+                                                _GH_STATE_BRANCH, sha, tok)
+            if done:
+                ok = True
+                break
+            if status != 409:
+                break  # erro que não é conflito (token/rede): não adianta repetir
+        if ok and new is not None:
+            _write_local_json(local_path, new)  # só grava local se REALMENTE persistiu
+        _STATE_RAW_CACHE.pop(remote_name, None)  # força reler o remoto real no próximo load
+        return new, ok
+
+def _push_state_file(filename, sync=False):
+    """Envia um arquivo de estado para o branch 'state'. Por padrão em thread
+    (não trava a UI); com sync=True grava de forma SÍNCRONA e confirmada — usado
+    para dados críticos (inativações), onde 'melhor esforço' não basta.
+    O token é capturado AQUI (thread principal) e passado adiante — ler st.secrets
+    de dentro da thread pode falhar fora do contexto Streamlit."""
     token = _gh_token()
     if not token:
         return
@@ -510,7 +664,10 @@ def _push_state_file(filename):
         with _GH_WRITE_LOCK:
             _gh_put_file(filename, content, f"Estado: {filename}", _GH_STATE_BRANCH, token=token)
 
-    threading.Thread(target=_send, daemon=True).start()
+    if sync:
+        _send()
+    else:
+        threading.Thread(target=_send, daemon=True).start()
 
 def _gh_diagnose():
     """Diagnóstico SÍNCRONO da persistência. Retorna lista de
@@ -1439,19 +1596,15 @@ def page_manager(df, months, df_sku, products_df):
                         f"*{r.get('requested_by_name', '?')}* em {r.get('date', '')}" +
                         (f"  \n💬 **Motivo:** {_mot}" if _mot else "  \n💬 *sem motivo informado*"))
             if c2.button("✅ Aprovar", key=f"apr_{r['client_id']}_{idx}"):
-                inact = load_inactive_clients()
-                inact.add(r['client_id'])
-                save_inactive_clients(inact)
-                r['status'] = 'aprovado'
-                r['decidido_em'] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                r['decidido_por'] = st.session_state.get('user_name', '')
-                save_inactive_requests(reqs)
-                st.rerun()
+                if decide_inactivation_request(r['client_id'], True, st.session_state.get('user_name', '')):
+                    st.rerun()
+                else:
+                    st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
             if c3.button("❌ Rejeitar", key=f"rej_{r['client_id']}_{idx}"):
-                r['status'] = 'rejeitado'
-                r['decidido_em'] = datetime.now().strftime('%Y-%m-%d %H:%M')
-                save_inactive_requests(reqs)
-                st.rerun()
+                if decide_inactivation_request(r['client_id'], False, st.session_state.get('user_name', '')):
+                    st.rerun()
+                else:
+                    st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
     # ---- Histórico / banco de motivos das inativações ----
     if reqs:
@@ -1496,14 +1649,12 @@ def page_manager(df, months, df_sku, products_df):
                                        sorted(_df_inact['name'].tolist()), key="mgr_react")
             if sel_react:
                 if st.button(f"♻️ Reativar {len(sel_react)} cliente(s)", key="btn_mgr_react", type="primary"):
-                    new_inact = set(inact_ids)
-                    for nm in sel_react:
-                        m = _df_inact[_df_inact['name'] == nm]
-                        if len(m) > 0:
-                            new_inact.discard(str(m.iloc[0]['id']).strip())
-                    save_inactive_clients(new_inact)
-                    st.success(f"{len(sel_react)} cliente(s) reativado(s).")
-                    st.rerun()
+                    _ids = [str(_df_inact[_df_inact['name'] == nm].iloc[0]['id']).strip()
+                            for nm in sel_react if len(_df_inact[_df_inact['name'] == nm]) > 0]
+                    if reactivate_clients(_ids):
+                        st.rerun()
+                    else:
+                        st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
     st.divider()
 
@@ -1592,11 +1743,20 @@ def _inativacao_form(clientes, key_prefix):
             if add_inactivation_request(c['cid'], c['name'], c['vendor'],
                                         motivo=mot, observacao=obs, direct_approve=pode):
                 n += 1
-        if pode:
-            st.success(f"{n} cliente(s) inativado(s) com motivo registrado.")
+        falhas = len(entradas) - n
+        if falhas:
+            # NÃO dá rerun: deixa o aviso visível e o formulário aberto para tentar de novo
+            if n:
+                st.success(f"{n} registrado(s).")
+            st.warning(f"⚠️ {falhas} não confirmado(s): pode ser solicitação já pendente, ou falha de "
+                       "conexão com o GitHub. Se foi conexão, **clique de novo** — o sistema completa o "
+                       "que faltou, sem duplicar.")
         else:
-            st.success(f"{n} solicitação(ões) enviada(s) ao administrador, com motivo.")
-        st.rerun()
+            if pode:
+                st.success(f"{n} cliente(s) inativado(s) com motivo registrado.")
+            else:
+                st.success(f"{n} solicitação(ões) enviada(s) ao administrador, com motivo.")
+            st.rerun()
 
 def page_actions(df, df_sku, products_df, df_client_products, months):
     st.header("✅ Minhas Ações")
@@ -2703,15 +2863,12 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
                 if selected_to_reactivate:
                     if st.button(f"✅ Reativar {len(selected_to_reactivate)} cliente(s)", key="btn_reactivate", type="primary"):
-                        new_inactive = inactive_ids.copy()
-                        for name in selected_to_reactivate:
-                            match = df_inactive[df_inactive['name'] == name]
-                            if len(match) > 0:
-                                cid = str(match.iloc[0]['id']).strip()
-                                new_inactive.discard(cid)
-                        save_inactive_clients(new_inactive)
-                        st.success(f"{len(selected_to_reactivate)} cliente(s) reativado(s)!")
-                        st.rerun()
+                        _ids = [str(df_inactive[df_inactive['name'] == nm].iloc[0]['id']).strip()
+                                for nm in selected_to_reactivate if len(df_inactive[df_inactive['name'] == nm]) > 0]
+                        if reactivate_clients(_ids):
+                            st.rerun()
+                        else:
+                            st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
             else:
                 st.caption("Reativação de clientes é feita pelo administrador.")
 
@@ -3037,7 +3194,9 @@ def page_admin():
 # MAIN APP
 # ============================================================
 def main():
-    # Restaura estado persistido no GitHub (1x por boot do container)
+    # Zera o memo de leitura de estado a cada rerun (cada run relê o GitHub 1x por arquivo)
+    _STATE_RAW_CACHE.clear()
+    # Restaura estado persistido no GitHub (1x por boot do container) — fallback local
     _sync_state_from_github()
 
     # Check authentication — try auto-login from URL params first

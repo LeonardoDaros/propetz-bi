@@ -52,5 +52,22 @@
   "timestamp": "2026-06-18 15:38:30",
   "date": "2026-06-18",
   "time": "15:38:30"
+ },
+ {
+  "user": "cristiane",
+  "name": "Cristiane",
+  "action": "login",
+  "timestamp": "2026-06-18 15:40:33",
+  "date": "2026-06-18",
+  "time": "15:40:33"
+ },
+ {
+  "user": "cristiane",
+  "name": "Cristiane",
+  "action": "page_view",
+  "page": "✅ Minhas Ações",
+  "timestamp": "2026-06-18 15:40:33",
+  "date": "2026-06-18",
+  "time": "15:40:33"
  }
 ]

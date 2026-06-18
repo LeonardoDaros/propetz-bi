@@ -48,7 +48,9 @@
    "requested_by": "grasiele",
    "requested_by_name": "Grasiele",
    "date": "2026-06-17 19:35",
-   "status": "pendente"
+   "status": "rejeitado",
+   "decidido_em": "2026-06-18 11:17",
+   "decidido_por": "Leonardo Daros"
   }
  ]
 }

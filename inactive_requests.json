@@ -128,6 +128,17 @@
    "requested_by_name": "Cristiane",
    "date": "2026-06-18 15:49",
    "status": "pendente"
+  },
+  {
+   "client_id": "1106",
+   "client_name": "MONICA REHM DA SILVA 05289209956",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "cristiane",
+   "requested_by_name": "Cristiane",
+   "date": "2026-06-18 15:49",
+   "status": "pendente"
   }
  ]
 }

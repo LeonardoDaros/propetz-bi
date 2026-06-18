@@ -62,6 +62,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-18 11:46",
    "status": "pendente"
+  },
+  {
+   "client_id": "1344",
+   "client_name": "LUANA GONCALVES MARTINEZ LTDA",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "cristiane",
+   "requested_by_name": "Cristiane",
+   "date": "2026-06-18 15:49",
+   "status": "pendente"
   }
  ]
 }

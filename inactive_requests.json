@@ -139,6 +139,17 @@
    "requested_by_name": "Cristiane",
    "date": "2026-06-18 15:49",
    "status": "pendente"
+  },
+  {
+   "client_id": "1335",
+   "client_name": "WALDECIR ALEXANDRE DA SILVA 71449892949",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "cristiane",
+   "requested_by_name": "Cristiane",
+   "date": "2026-06-18 15:49",
+   "status": "pendente"
   }
  ]
 }

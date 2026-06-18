@@ -51,6 +51,17 @@
    "status": "rejeitado",
    "decidido_em": "2026-06-18 11:17",
    "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1118",
+   "client_name": "ANDRE HENRIQUE FURTADO",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Inadimplente",
+   "observacao": "Cliente ficou inadimplente, não responde mais as mensagens e não atende as ligações.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-18 11:46",
+   "status": "pendente"
   }
  ]
 }

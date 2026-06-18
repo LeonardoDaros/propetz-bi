@@ -117,6 +117,17 @@
    "requested_by_name": "Cristiane",
    "date": "2026-06-18 15:49",
    "status": "pendente"
+  },
+  {
+   "client_id": "1343",
+   "client_name": "LUX DOG SALAO DE BELEZA PARA CAES EIRELI",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "Inadimplente",
+   "observacao": "",
+   "requested_by": "cristiane",
+   "requested_by_name": "Cristiane",
+   "date": "2026-06-18 15:49",
+   "status": "pendente"
   }
  ]
 }

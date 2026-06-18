@@ -12,6 +12,43 @@
    "status": "aprovado",
    "decidido_em": "2026-06-17 21:01",
    "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1338",
+   "client_name": "VIP PET SHOP COMERCIO ATACADISTA E VAREJISTA DE ARTIGOS PARA",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "",
+   "observacao": "(restaurado do histórico)",
+   "requested_by": "grasiele",
+   "requested_by_name": "Grasiele",
+   "date": "2026-06-17 19:01",
+   "status": "aprovado",
+   "decidido_em": "2026-06-17 19:02",
+   "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1360",
+   "client_name": "VICTOR ANDRADE DOS SANTOS 32979043800",
+   "vendor": "Yasmin Propetz Distribuição",
+   "motivo": "",
+   "observacao": "(restaurado do histórico)",
+   "requested_by": "grasiele",
+   "requested_by_name": "Grasiele",
+   "date": "2026-06-17 19:00",
+   "status": "aprovado",
+   "decidido_em": "2026-06-17 19:00",
+   "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1118",
+   "client_name": "ANDRE HENRIQUE FURTADO",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "",
+   "observacao": "(restaurado do histórico — pendente de aprovação)",
+   "requested_by": "grasiele",
+   "requested_by_name": "Grasiele",
+   "date": "2026-06-17 19:35",
+   "status": "pendente"
   }
  ]
 }

@@ -109,7 +109,9 @@
    "requested_by": "cristiane",
    "requested_by_name": "Cristiane",
    "date": "2026-06-18 15:49",
-   "status": "pendente"
+   "status": "aprovado",
+   "decidido_em": "2026-06-18 17:27",
+   "decidido_por": "Leonardo Daros"
   },
   {
    "client_id": "1298",

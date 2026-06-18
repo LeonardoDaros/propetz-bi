@@ -241,52 +241,61 @@ def clear_failed_attempts(username):
         _save_login_attempts(attempts)
 
 # ============================================================
-# ACCESS LOG (tracks who, when, where, duration)
+# ACCESS LOG — registra QUEM entrou, QUANDO e quais PÁGINAS abriu (frequência de uso;
+# não mede duração de sessão). Mesma robustez das inativações: lê do GitHub (fonte da
+# verdade) e grava por APPEND ATÔMICO — um reinício ruim ou acessos simultâneos não
+# apagam o histórico. A gravação roda em segundo plano para não travar a navegação.
 # ============================================================
 ACCESS_LOG_FILE = os.path.join(os.path.dirname(__file__), "access_log.json")
 
 def _load_access_log():
-    if os.path.exists(ACCESS_LOG_FILE):
-        try:
-            with open(ACCESS_LOG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    """Lê o log do GitHub (fonte da verdade), com fallback no arquivo local."""
+    data = _read_state_json("access_log.json", ACCESS_LOG_FILE, [])
+    return data if isinstance(data, list) else []
 
-def _save_access_log(log):
-    # Keep last 5000 entries to avoid file bloat
-    log = log[-5000:]
-    with open(ACCESS_LOG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(log, f, ensure_ascii=False, indent=1)
-    _push_state_file("access_log.json")
+def _append_access_log_entry(entry):
+    """Acrescenta UM evento ao log de forma robusta e NÃO bloqueante: numa thread,
+    faz read-modify-write atômico no GitHub (lê o log atual, acrescenta, corta nos
+    últimos 5000). Sem token: grava só no local (efêmero, melhor esforço)."""
+    tok = _gh_token()
+    if not tok:
+        log = _load_access_log()
+        log = (log if isinstance(log, list) else [])[-4999:] + [entry]
+        _write_local_json(ACCESS_LOG_FILE, log)
+        _STATE_RAW_CACHE.pop("access_log.json", None)
+        return
+
+    def _do():
+        _gh_mutate_json("access_log.json", ACCESS_LOG_FILE,
+            lambda d: ((d if isinstance(d, list) else []) + [entry])[-5000:],
+            [], token=tok)
+
+    threading.Thread(target=_do, daemon=True).start()
 
 def log_access(username, user_name, action="login"):
     """Log a user access event."""
-    log = _load_access_log()
-    log.append({
+    now = datetime.now()
+    _append_access_log_entry({
         "user": username,
         "name": user_name,
         "action": action,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "time": datetime.now().strftime("%H:%M:%S"),
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
     })
-    _save_access_log(log)
 
 def log_page_view(username, page_name):
     """Log a page view event."""
-    log = _load_access_log()
-    log.append({
+    now = datetime.now()
+    _append_access_log_entry({
         "user": username,
         "name": st.session_state.get("user_name", username),
         "action": "page_view",
         "page": page_name,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "time": datetime.now().strftime("%H:%M:%S"),
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
     })
-    _save_access_log(log)
 
 def has_full_data_access():
     """Returns True for admin and diretor roles (see all data, no vendor filter)."""
@@ -589,7 +598,7 @@ def _write_local_json(local_path, data):
     except Exception:
         pass
 
-def _gh_mutate_json(remote_name, local_path, apply_fn, default):
+def _gh_mutate_json(remote_name, local_path, apply_fn, default, token=None):
     """READ-MODIFY-WRITE ATÔMICO do estado no branch 'state'. Retorna (dados, ok):
     - lê o remoto FRESCO (conteúdo + SHA), aplica apply_fn(dados)->novos_dados, grava
       com aquele SHA. Se outra gravação entrou no meio (409), RE-LÊ e repete (até 5x) —
@@ -597,8 +606,9 @@ def _gh_mutate_json(remote_name, local_path, apply_fn, default):
     - ok=True só se REALMENTE persistiu (ou foi no-op). Se falhou (GitHub fora/token
       inválido), ok=False e NÃO grava local — para não dar falsa sensação de salvo.
     - sem token: modo local (ok=True, melhor esforço offline).
-    Serializa no processo via _GH_WRITE_LOCK; o retry cobre concorrência entre containers."""
-    tok = _gh_token()
+    Serializa no processo via _GH_WRITE_LOCK; o retry cobre concorrência entre containers.
+    token: capturado na thread principal e passado adiante quando rodando em background."""
+    tok = token or _gh_token()
     if not tok:
         cur = default
         if os.path.exists(local_path):
@@ -1661,10 +1671,10 @@ def page_manager(df, months, df_sku, products_df):
     # ---- LINHA 5: O TIME ESTÁ USANDO O BI? ----
     st.subheader("📡 Uso do BI pelo Time (últimos 14 dias)")
     access_log = _load_access_log()
-    if not access_log:
+    df_log = pd.DataFrame(access_log) if access_log else pd.DataFrame()
+    if df_log.empty or 'action' not in df_log.columns or 'date' not in df_log.columns:
         st.info("Sem registros de acesso ainda. (Para o log sobreviver a reinícios do servidor, configure o GITHUB_TOKEN — ver COMO-USAR.md.)")
     else:
-        df_log = pd.DataFrame(access_log)
         cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         recent = df_log[(df_log['action'] == 'login') & (df_log['date'] >= cutoff)]
         users_all = load_users().get('users', {})
@@ -3128,12 +3138,11 @@ def page_admin():
     st.caption("Acompanhe quando e como o time está utilizando o sistema")
 
     access_log = _load_access_log()
+    df_log = pd.DataFrame(access_log) if access_log else pd.DataFrame()
 
-    if len(access_log) == 0:
+    if df_log.empty or not {'user', 'date', 'action'}.issubset(df_log.columns):
         st.info("Nenhum acesso registrado ainda. Os logs começam a ser gerados a partir do próximo login.")
     else:
-        df_log = pd.DataFrame(access_log)
-
         # --- Filters ---
         log_col1, log_col2 = st.columns(2)
         with log_col1:

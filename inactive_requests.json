@@ -84,6 +84,17 @@
    "requested_by_name": "Cristiane",
    "date": "2026-06-18 15:49",
    "status": "pendente"
+  },
+  {
+   "client_id": "1122",
+   "client_name": "Guilherme Jose Tavares Botta EIRELI",
+   "vendor": "Cristiane La Maison Propetz",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "cristiane",
+   "requested_by_name": "Cristiane",
+   "date": "2026-06-18 15:49",
+   "status": "pendente"
   }
  ]
 }

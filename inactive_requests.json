@@ -190,6 +190,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 13:52",
    "status": "pendente"
+  },
+  {
+   "client_id": "1272",
+   "client_name": "ELANE PEREIRA NEVES 08268987855",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "Cliente compra para levar para Bolívia, não retorna mais os contatos acredito ter encerrado as atividades.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 13:58",
+   "status": "pendente"
   }
  ]
 }

@@ -234,6 +234,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 14:02",
    "status": "pendente"
+  },
+  {
+   "client_id": "1545",
+   "client_name": "Rafael Sampaio Da Silva",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "Rafael da SOS cutelaria nunca foi cliente de distribuição.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 14:04",
+   "status": "pendente"
   }
  ]
 }

@@ -179,6 +179,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 13:52",
    "status": "pendente"
+  },
+  {
+   "client_id": "1035",
+   "client_name": "ANDERSON CERQUEIRA ANDRIETTA 22158467800",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "CLIENTE COMPRA NO CADASTRO KSA DISTRIBUIDORA",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 13:52",
+   "status": "pendente"
   }
  ]
 }

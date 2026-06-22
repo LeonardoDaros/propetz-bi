@@ -245,6 +245,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 14:04",
    "status": "pendente"
+  },
+  {
+   "client_id": "1217",
+   "client_name": "V.S.FONTES - EQUIPAMENTOS",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "CADASTRO DUPLICADO COMPRA NO CADASTRO V.S FONTES - EQUIPAMENTOS|SN",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 14:13",
+   "status": "pendente"
   }
  ]
 }

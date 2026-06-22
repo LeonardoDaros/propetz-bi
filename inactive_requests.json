@@ -212,6 +212,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 13:58",
    "status": "pendente"
+  },
+  {
+   "client_id": "1411",
+   "client_name": "DANILLO HENRIQUE LIZI CAMPOS 22963143842",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "Cadastro duplicado, cliente não compra mais por esse cadastro apenas pelo cadastro KAUAN MENDES DA COSTA MORIYAMA",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 14:01",
+   "status": "pendente"
   }
  ]
 }

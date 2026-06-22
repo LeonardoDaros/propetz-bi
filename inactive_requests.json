@@ -168,6 +168,17 @@
    "status": "aprovado",
    "decidido_em": "2026-06-18 17:27",
    "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1584",
+   "client_name": "Francisco Luciano Alves Honorio Ltda | Rn",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Mudou de canal (virou varejo/consumidor)",
+   "observacao": "Cliente captado na feira de 205, fez um único pedido para banho e tosa e tentar vender a sobra das quantidades de distribuição porém não conseguiu efetivar uma operação para distribuição.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 13:52",
+   "status": "pendente"
   }
  ]
 }

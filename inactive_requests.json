@@ -201,6 +201,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 13:58",
    "status": "pendente"
+  },
+  {
+   "client_id": "1142",
+   "client_name": "WILLIAM GALHARDE",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 13:58",
+   "status": "pendente"
   }
  ]
 }

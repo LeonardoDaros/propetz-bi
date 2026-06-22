@@ -256,6 +256,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 14:13",
    "status": "pendente"
+  },
+  {
+   "client_id": "1130",
+   "client_name": "RODRIGO LIMA DE FREITAS 39244314851",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "Cliente compra em outro cadastro CLAUDIA CRISTINA ALVES DE LIMA",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 14:25",
+   "status": "pendente"
   }
  ]
 }

@@ -223,6 +223,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 14:01",
    "status": "pendente"
+  },
+  {
+   "client_id": "1554",
+   "client_name": "BUENDIA DISTRIBUIDORA DE PRODUTOS AGROPECUARIOS LTDA - natureza distribuidora",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "cadastro duplicado",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-22 14:02",
+   "status": "pendente"
   }
  ]
 }

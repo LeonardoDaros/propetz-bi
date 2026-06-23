@@ -366,6 +366,17 @@
    "requested_by_name": "Yasmin",
    "date": "2026-06-23 13:09",
    "status": "pendente"
+  },
+  {
+   "client_id": "1468",
+   "client_name": "T SMAHA GARBOSHOP",
+   "vendor": "Yasmin Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "Não é mais do paraná, e vende surreal pet agora, sua marca propria",
+   "requested_by": "yasmin",
+   "requested_by_name": "Yasmin",
+   "date": "2026-06-23 13:09",
+   "status": "pendente"
   }
  ]
 }

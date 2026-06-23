@@ -379,6 +379,17 @@
    "requested_by_name": "Yasmin",
    "date": "2026-06-23 13:09",
    "status": "pendente"
+  },
+  {
+   "client_id": "1462",
+   "client_name": "TECHPET SECADORES LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "Cliente tinha uma fábrica também de secadores não deu certo na distribuição parou de comprar.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 13:40",
+   "status": "pendente"
   }
  ]
 }

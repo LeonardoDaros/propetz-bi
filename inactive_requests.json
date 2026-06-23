@@ -322,6 +322,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 13:03",
    "status": "pendente"
+  },
+  {
+   "client_id": "1363",
+   "client_name": "BARBERPET COMERCIO E CENTRO DE ESTETICA ANIMAL EIRELI",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 13:04",
+   "status": "pendente"
   }
  ]
 }

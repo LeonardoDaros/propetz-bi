@@ -263,5 +263,14 @@
   "timestamp": "2026-06-23 13:05:09",
   "date": "2026-06-23",
   "time": "13:05:09"
+ },
+ {
+  "user": "yasmin",
+  "name": "Yasmin",
+  "action": "page_view",
+  "page": "👤 Meus Clientes",
+  "timestamp": "2026-06-23 13:30:44",
+  "date": "2026-06-23",
+  "time": "13:30:44"
  }
 ]

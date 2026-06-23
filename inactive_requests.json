@@ -300,6 +300,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 12:59",
    "status": "pendente"
+  },
+  {
+   "client_id": "1354",
+   "client_name": "SCARMIF COMERCIO DE ARTIGOS PESSOAIS E DOMESTICOS LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 13:00",
+   "status": "pendente"
   }
  ]
 }

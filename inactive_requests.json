@@ -459,6 +459,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 14:24",
    "status": "pendente"
+  },
+  {
+   "client_id": "1444",
+   "client_name": "SW EVENTOS LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "Um cadastro diferente daquele cliente que comprava para levar para a Bolívia.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 14:26",
+   "status": "pendente"
   }
  ]
 }

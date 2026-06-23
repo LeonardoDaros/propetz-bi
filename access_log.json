@@ -324,5 +324,14 @@
   "timestamp": "2026-06-23 14:11:10",
   "date": "2026-06-23",
   "time": "14:11:10"
+ },
+ {
+  "user": "emanuel",
+  "name": "Emanuel",
+  "action": "page_view",
+  "page": "📊 Minha Visão Geral",
+  "timestamp": "2026-06-23 14:11:11",
+  "date": "2026-06-23",
+  "time": "14:11:11"
  }
 ]

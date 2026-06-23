@@ -267,6 +267,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-22 14:25",
    "status": "pendente"
+  },
+  {
+   "client_id": "1482",
+   "client_name": "54.724.730 BRUNO ROBERTO DOS SANTOS / adriana da silva santos",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "Cliente nunca mais respondeu aos contatos feitos, mudou até o número de WhatsApp",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 12:48",
+   "status": "pendente"
   }
  ]
 }

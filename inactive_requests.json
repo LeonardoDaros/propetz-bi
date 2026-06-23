@@ -289,6 +289,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 12:51",
    "status": "pendente"
+  },
+  {
+   "client_id": "1483",
+   "client_name": "NUTRICAO COMERCIO E SERVICOS LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 12:59",
+   "status": "pendente"
   }
  ]
 }

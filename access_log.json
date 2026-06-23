@@ -360,5 +360,13 @@
   "timestamp": "2026-06-23 15:00:12",
   "date": "2026-06-23",
   "time": "15:00:12"
+ },
+ {
+  "user": "cristiane",
+  "name": "Cristiane",
+  "action": "login",
+  "timestamp": "2026-06-23 15:11:59",
+  "date": "2026-06-23",
+  "time": "15:11:59"
  }
 ]

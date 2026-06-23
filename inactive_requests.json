@@ -437,6 +437,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 14:10",
    "status": "pendente"
+  },
+  {
+   "client_id": "1401",
+   "client_name": "MUNDO ANIMAL LABORATORIO VETERINARIO LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "Cliente com uma demanda muito baixa, não responde e não retorna aos contatos.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 14:23",
+   "status": "pendente"
   }
  ]
 }

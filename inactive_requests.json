@@ -278,6 +278,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 12:48",
    "status": "pendente"
+  },
+  {
+   "client_id": "1562",
+   "client_name": "Casa Do Tosador Pet Ltda | Sn",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "Cadastro duplicado, mudou para a LOJA DO TOSADOR CUTELARIA E PRODUTOS PET LTDA",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-23 12:51",
+   "status": "pendente"
   }
  ]
 }

@@ -355,6 +355,17 @@
    "requested_by_name": "Yasmin",
    "date": "2026-06-23 13:09",
    "status": "pendente"
+  },
+  {
+   "client_id": "1342",
+   "client_name": "TATIANE THOME ZANIN 94077460034",
+   "vendor": "Yasmin Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "yasmin",
+   "requested_by_name": "Yasmin",
+   "date": "2026-06-23 13:09",
+   "status": "pendente"
   }
  ]
 }

@@ -344,6 +344,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 13:07",
    "status": "pendente"
+  },
+  {
+   "client_id": "1533",
+   "client_name": "Tucha Transportes E Comércio De Produtos Veterinários Ltda",
+   "vendor": "Yasmin Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "Compra agora pela mohana",
+   "requested_by": "yasmin",
+   "requested_by_name": "Yasmin",
+   "date": "2026-06-23 13:09",
+   "status": "pendente"
   }
  ]
 }

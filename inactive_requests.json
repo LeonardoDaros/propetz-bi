@@ -492,6 +492,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-24 12:00",
    "status": "pendente"
+  },
+  {
+   "client_id": "1058",
+   "client_name": "ROBERTO DOS SANTOS MARQUES 78961106600",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "Mudou de Ramo.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-24 12:01",
+   "status": "pendente"
   }
  ]
 }

@@ -503,6 +503,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-24 12:01",
    "status": "pendente"
+  },
+  {
+   "client_id": "1418",
+   "client_name": "TRIPET DISTRIBUIÇÃO LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "Não vai mais trabalhar com produtos de banho e tosa.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-24 12:24",
+   "status": "pendente"
   }
  ]
 }

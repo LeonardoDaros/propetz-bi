@@ -553,5 +553,14 @@
   "timestamp": "2026-06-25 13:07:00",
   "date": "2026-06-25",
   "time": "13:07:00"
+ },
+ {
+  "user": "grasiele",
+  "name": "Grasiele",
+  "action": "page_view",
+  "page": "🎛️ Painel do Gestor",
+  "timestamp": "2026-06-25 13:07:03",
+  "date": "2026-06-25",
+  "time": "13:07:03"
  }
 ]

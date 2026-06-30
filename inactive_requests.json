@@ -525,6 +525,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-30 12:11",
    "status": "pendente"
+  },
+  {
+   "client_id": "1451",
+   "client_name": "ANIZAN FERREIRA DA SILVA FILHO",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-30 12:12",
+   "status": "pendente"
   }
  ]
 }

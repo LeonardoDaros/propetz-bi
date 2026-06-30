@@ -547,6 +547,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-06-30 12:26",
    "status": "pendente"
+  },
+  {
+   "client_id": "1074",
+   "client_name": "O TOSADOR FRANQUIAS EIRELI",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-06-30 12:27",
+   "status": "pendente"
   }
  ]
 }

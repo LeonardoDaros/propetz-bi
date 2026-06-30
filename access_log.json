@@ -666,5 +666,14 @@
   "timestamp": "2026-06-30 12:29:36",
   "date": "2026-06-30",
   "time": "12:29:36"
+ },
+ {
+  "user": "leonardo",
+  "name": "Leonardo Daros",
+  "action": "page_view",
+  "page": "🎛️ Painel do Gestor",
+  "timestamp": "2026-06-30 12:29:36",
+  "date": "2026-06-30",
+  "time": "12:29:36"
  }
 ]

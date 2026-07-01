@@ -646,6 +646,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-01 12:36",
    "status": "pendente"
+  },
+  {
+   "client_id": "1155",
+   "client_name": "ANIMALE COMERCIO & SERVICOS LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Mudou de canal (virou varejo/consumidor)",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-01 12:38",
+   "status": "pendente"
   }
  ]
 }

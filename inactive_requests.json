@@ -624,6 +624,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-01 12:26",
    "status": "pendente"
+  },
+  {
+   "client_id": "1033",
+   "client_name": "OSVALDECIR ANDRIOLI 08306081846",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Parou de comprar / sem demanda",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-01 12:35",
+   "status": "pendente"
   }
  ]
 }

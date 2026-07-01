@@ -635,6 +635,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-01 12:35",
    "status": "pendente"
+  },
+  {
+   "client_id": "1241",
+   "client_name": "ANDRE THIAGO ORTIZ 00341881180",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Mudou de canal (virou varejo/consumidor)",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-01 12:36",
+   "status": "pendente"
   }
  ]
 }

@@ -806,5 +806,14 @@
   "timestamp": "2026-07-01 19:01:04",
   "date": "2026-07-01",
   "time": "19:01:04"
+ },
+ {
+  "user": "leonardo",
+  "name": "Leonardo Daros",
+  "action": "page_view",
+  "page": "🎛️ Painel do Gestor",
+  "timestamp": "2026-07-01 20:39:20",
+  "date": "2026-07-01",
+  "time": "20:39:20"
  }
 ]

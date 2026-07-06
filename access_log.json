@@ -878,5 +878,13 @@
   "timestamp": "2026-07-06 11:45:31",
   "date": "2026-07-06",
   "time": "11:45:31"
+ },
+ {
+  "user": "cristiane",
+  "name": "Cristiane",
+  "action": "login",
+  "timestamp": "2026-07-06 11:46:20",
+  "date": "2026-07-06",
+  "time": "11:46:20"
  }
 ]

@@ -475,7 +475,9 @@
    "requested_by": "emanuel",
    "requested_by_name": "Emanuel",
    "date": "2026-06-23 14:26",
-   "status": "pendente"
+   "status": "aprovado",
+   "decidido_em": "2026-07-07 09:20",
+   "decidido_por": "Leonardo Daros"
   },
   {
    "client_id": "1388",

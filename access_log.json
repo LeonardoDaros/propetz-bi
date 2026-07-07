@@ -931,5 +931,14 @@
   "timestamp": "2026-07-07 09:27:04",
   "date": "2026-07-07",
   "time": "09:27:04"
+ },
+ {
+  "user": "leonardo",
+  "name": "Leonardo Daros",
+  "action": "page_view",
+  "page": "📊 Visão Geral",
+  "timestamp": "2026-07-07 09:27:10",
+  "date": "2026-07-07",
+  "time": "09:27:10"
  }
 ]

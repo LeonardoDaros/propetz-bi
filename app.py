@@ -10,7 +10,7 @@ import json
 import base64
 import threading
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # ============================================================
 # CONFIG
@@ -1266,17 +1266,24 @@ def process_excel(xlsx_path):
         ws_sku = wb[sku_sheet_name]
         sku_data = []
 
-        # Auto-detect month column positions from row 1
+        # Auto-detect month column positions from row 1.
+        # CUIDADO (aprendido em jul/26): o Excel converte cabeçalhos digitados como
+        # "MAR/26" em DATA de verdade (datetime). O parser precisa aceitar os dois
+        # formatos, senão os blocos novos são pulados em silêncio e o mix congela.
+        _MES_ABREV = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN',
+                      'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ']
         month_cols = []
+        month_headers = []
         for c in range(1, ws_sku.max_column + 1):
             v = ws_sku.cell(1, c).value
-            if v and '/' in str(v):
+            if v is None:
+                continue
+            if isinstance(v, (datetime, date)):
                 month_cols.append(c)
-        month_headers = []
-        for col in month_cols:
-            h = ws_sku.cell(1, col).value
-            if h:
-                month_headers.append(str(h).strip())
+                month_headers.append(f"{_MES_ABREV[v.month - 1]}/{str(v.year)[-2:]}")
+            elif '/' in str(v):
+                month_cols.append(c)
+                month_headers.append(str(v).strip().upper())
         
         # Read data rows starting from row 3 (0-indexed row 2)
         for r in range(3, ws_sku.max_row + 1):

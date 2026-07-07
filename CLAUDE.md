@@ -45,7 +45,7 @@ Impacto financeiro de churn/risco usa `annual_value_estimate()` (ticket médio d
 2. **Dados sensíveis** — receita por cliente/vendedor. Repo é privado; nunca colocar dados ou senhas em código.
 3. **Deploy** — alterações só entram no ar após Leonardo rodar `deploy.bat`. Avisar quando uma mudança exigir deploy.
 4. **Interface em pt-BR**, valores em R$ (`fmt_brl`), identidade visual Propetz (teal/azul).
-5. **Mudança em `process_excel()`** exige validar contra a planilha real — estrutura de blocos da planilha SKU é frágil.
+5. **Mudança em `process_excel()`** exige validar contra a planilha real — estrutura de blocos da planilha SKU é frágil. Pegadinha conhecida (jul/26): o Excel converte cabeçalho de mês digitado ("MAR/26") em datetime; o parser aceita os DOIS formatos (str com "/" e datetime) — manter assim, senão blocos novos são pulados em silêncio.
 
 ## Contexto de negócio
 

@@ -1126,5 +1126,13 @@
   "timestamp": "2026-07-09 14:53:36",
   "date": "2026-07-09",
   "time": "14:53:36"
+ },
+ {
+  "user": "leonardo",
+  "name": "Leonardo Daros",
+  "action": "login",
+  "timestamp": "2026-07-09 20:16:56",
+  "date": "2026-07-09",
+  "time": "20:16:56"
  }
 ]

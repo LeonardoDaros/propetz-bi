@@ -745,6 +745,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:01",
    "status": "pendente"
+  },
+  {
+   "client_id": "1208",
+   "client_name": "Serra Clean Distribuidora e Comércio de Materiais de Limpeza",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:02",
+   "status": "pendente"
   }
  ]
 }

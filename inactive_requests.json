@@ -734,6 +734,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:01",
    "status": "pendente"
+  },
+  {
+   "client_id": "1300",
+   "client_name": "PETY SPACE PET SHOP LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:01",
+   "status": "pendente"
   }
  ]
 }

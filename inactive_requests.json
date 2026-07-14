@@ -789,6 +789,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:07",
    "status": "pendente"
+  },
+  {
+   "client_id": "1153",
+   "client_name": "ELANY DE SOUSA SILVA - ME",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "Cliente não trabalha mais no ramo, marido adquiriu e compra por outro CNPJ CASA AGRICOLA E PET LTDA | RN",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:09",
+   "status": "pendente"
   }
  ]
 }

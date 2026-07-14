@@ -712,6 +712,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 16:55",
    "status": "pendente"
+  },
+  {
+   "client_id": "1151",
+   "client_name": "AFFIAR SERVICOS E COMERCIO LTDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Mudou de canal (virou varejo/consumidor)",
+   "observacao": "Cliente compra somente peças, e sempre pelo varejo.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 16:56",
+   "status": "pendente"
   }
  ]
 }

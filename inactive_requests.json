@@ -767,6 +767,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:06",
    "status": "pendente"
+  },
+  {
+   "client_id": "1124",
+   "client_name": "PEDRO LUIZ SILVA CARNEIRO LEAO 18342361420",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Outro",
+   "observacao": "Cliente nunca comprou comigo na distribuição e não responde e nem atende os contatos feitos.",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:06",
+   "status": "pendente"
   }
  ]
 }

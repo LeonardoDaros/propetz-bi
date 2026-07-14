@@ -778,6 +778,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:06",
    "status": "pendente"
+  },
+  {
+   "client_id": "1333",
+   "client_name": "SEYLE ARIANE BRAGA SILVA 11359397647",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "Cliente voltou a comprar em um novo CNPJ 35.973.012 SEYLE ARIANE BRAGA SILVA | SN",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:07",
+   "status": "pendente"
   }
  ]
 }

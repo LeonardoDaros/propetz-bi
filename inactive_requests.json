@@ -723,6 +723,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 16:56",
    "status": "pendente"
+  },
+  {
+   "client_id": "1375",
+   "client_name": "GUSTAVO HENRIQUE DOS SANTOS 09156041675",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 17:01",
+   "status": "pendente"
   }
  ]
 }

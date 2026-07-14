@@ -800,6 +800,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 17:09",
    "status": "pendente"
+  },
+  {
+   "client_id": "1177",
+   "client_name": "Gisele Cristina Della Corte 00748504907",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "Cliente não trabalha mais no ramo pet",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 18:40",
+   "status": "pendente"
   }
  ]
 }

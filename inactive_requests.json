@@ -701,6 +701,17 @@
    "status": "aprovado",
    "decidido_em": "2026-07-07 09:26",
    "decidido_por": "Leonardo Daros"
+  },
+  {
+   "client_id": "1400",
+   "client_name": "MARIA JOSE CONCEIÇÃO DA SILVA BINDA",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 16:55",
+   "status": "pendente"
   }
  ]
 }

@@ -822,6 +822,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 18:45",
    "status": "pendente"
+  },
+  {
+   "client_id": "1280",
+   "client_name": "HANS ANTON CONDO BLANCO 23228519813",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Fechou / encerrou atividades",
+   "observacao": "cliente comprava até São Paulo para levar para a Bolívia",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 18:48",
+   "status": "pendente"
   }
  ]
 }

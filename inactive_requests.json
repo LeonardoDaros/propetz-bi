@@ -811,6 +811,17 @@
    "requested_by_name": "Emanuel",
    "date": "2026-07-14 18:40",
    "status": "pendente"
+  },
+  {
+   "client_id": "1120",
+   "client_name": "LUCIANA INACIA DE MORAES 29520646876",
+   "vendor": "Emanuel Propetz Distribuição",
+   "motivo": "Não existe mais / cadastro duplicado",
+   "observacao": "",
+   "requested_by": "emanuel",
+   "requested_by_name": "Emanuel",
+   "date": "2026-07-14 18:45",
+   "status": "pendente"
   }
  ]
 }

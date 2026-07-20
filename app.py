@@ -38,6 +38,30 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #e2e8f0; }
     [data-testid="stSidebar"] [data-testid="stMarkdown"] { color: #1e293b; }
 
+    /* Campos de preenchimento em DESTAQUE: sem isso ficam com o mesmo fundo
+       da página e o colaborador não enxerga onde escrever */
+    .stTextInput [data-baseweb="input"], .stNumberInput [data-baseweb="input"],
+    .stDateInput [data-baseweb="input"], .stTextArea [data-baseweb="textarea"] {
+        background-color: #eff6ff !important;
+        border: 1.5px solid #93c5fd !important;
+        border-radius: 8px !important;
+    }
+    .stTextInput input, .stNumberInput input, .stDateInput input,
+    .stTextArea textarea { background-color: transparent !important; }
+    .stTextInput [data-baseweb="input"]:focus-within,
+    .stNumberInput [data-baseweb="input"]:focus-within,
+    .stDateInput [data-baseweb="input"]:focus-within,
+    .stTextArea [data-baseweb="textarea"]:focus-within {
+        background-color: #ffffff !important;
+        border-color: #2563eb !important;
+        box-shadow: 0 0 0 3px rgba(37,99,235,0.15) !important;
+    }
+    .stSelectbox [data-baseweb="select"] > div {
+        background-color: #eff6ff !important;
+        border: 1.5px solid #93c5fd !important;
+        border-radius: 8px !important;
+    }
+
     /* Header banner */
     .propetz-header {
         background: linear-gradient(135deg, #1e3a5f, #2563eb);
@@ -1680,8 +1704,9 @@ def page_garantias(products_df, df_clients):
                                      placeholder="Quem comprou do distribuidor e está reclamando...")
             cf_nf = cf2.text_input("NF da venda ao cliente final *", key="gn_cf_nf",
                                    placeholder="Nota distribuidor → cliente (obrigatória)...")
-            cf_chave = st.text_input("Chave de acesso da NF (44 dígitos, se tiver em mãos)",
-                                     key="gn_cf_chave", placeholder="Pode completar depois na Bancada...")
+            cf_chave = st.text_input("Chave de acesso da NF (44 dígitos)",
+                                     key="gn_cf_chave",
+                                     placeholder="Digite aqui no registro — a Bancada só consulta, não edita...")
         c7, _ = st.columns([1, 1])
         defeito = c7.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
                                placeholder="Categoria do problema...", key="gn_def")
@@ -1803,11 +1828,13 @@ def page_garantias(products_df, df_clients):
                                    f"**Compra:** {_dtc or '—'} | **Registro:** {g.get('criado_em','')} "
                                    f"por {g.get('criado_por','')}")
                     if g.get("canal") == "Distribuição":
-                        # cliente final se define na NOVA GARANTIA e aqui é só leitura —
-                        # editar na bancada geraria divergência com o registro original
+                        # cliente final, NF e chave se definem na NOVA GARANTIA e aqui
+                        # são só leitura — editar na bancada geraria divergência
+                        _chv = g.get("cliente_final_nf_chave") or ""
                         _linha_meta += (f"  \n🏷️ **Cliente final (comprou do distribuidor):** "
                                         f"{g.get('cliente_final') or '—'} | "
-                                        f"**NF da venda ao cliente final:** {g.get('cliente_final_nf') or '—'}")
+                                        f"**NF da venda ao cliente final:** {g.get('cliente_final_nf') or '—'} | "
+                                        f"**Chave:** {f'`{_chv}`' if _chv else '—'}")
                     st.markdown(_linha_meta)
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                                 f"— {g.get('defeito_obs') or 'sem obs.'}")
@@ -1900,11 +1927,6 @@ def page_garantias(products_df, df_clients):
                                                         value=g.get("rastreio_saida", ""),
                                                         key=f"rgs_{tk}_{g['id']}",
                                                         placeholder="Código do envio de volta...")
-                        cf_chave_b = g.get("cliente_final_nf_chave", "")
-                        if g.get("canal") == "Distribuição":
-                            cf_chave_b = st.text_input("Chave de acesso da NF do cliente final (44 dígitos)",
-                                                       value=g.get("cliente_final_nf_chave", ""),
-                                                       key=f"cfc_{tk}_{g['id']}")
                         st.markdown("**Peças trocadas / serviços** (até 3 — peça puxa custo da Base Mãe; "
                                     "serviço usa o R$ digitado, deixe 0 se feito em casa):")
                         _serv_map = {"🛠️ SERVIÇO — Afiação": ("SERV-AFIACAO", "Afiação (serviço)"),
@@ -1988,8 +2010,6 @@ def page_garantias(products_df, df_clients):
                                    "empresa_nf": empresa_nf or "", "nf_entrada": nf_entrada.strip(),
                                    "rastreio_saida": rastreio_saida.strip(),
                                    "prioridade": prioridade_b,
-                                   "cliente_final_nf_chave": "".join(ch for ch in (cf_chave_b or "")
-                                                                     if ch.isdigit()),
                                    "data_chegada": data_chegada.strftime("%Y-%m-%d") if data_chegada else "",
                                    "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),

@@ -1585,7 +1585,7 @@ def page_garantias(products_df, df_clients):
         # Campos FORA de st.form de propósito: marcar "Outro" mostra o campo
         # de especificação NA HORA (form fechado não reage antes do submit).
         _NK = ("gn_canal", "gn_canal_outro", "gn_clidist", "gn_clitxt", "gn_prod",
-               "gn_dtcompra", "gn_empresa", "gn_nf", "gn_def", "gn_def_outro", "gn_obs")
+               "gn_dtcompra", "gn_dist_dt", "gn_dist_nf", "gn_def", "gn_def_outro", "gn_obs")
         c1, c2 = st.columns(2)
         canal = c1.selectbox("Canal *", CANAIS_GARANTIA, index=None,
                              placeholder="De onde vem o cliente...", key="gn_canal")
@@ -1599,12 +1599,17 @@ def page_garantias(products_df, df_clients):
         c3, c4 = st.columns([2, 1])
         produto = c3.selectbox("Produto *", prod_opts, index=None,
                                placeholder="Buscar por código ou nome...", key="gn_prod")
-        data_compra = c4.date_input("Data da compra (se souber)", value=None,
+        data_compra = c4.date_input("Data da compra do reclamante (se souber)", value=None,
                                     format="DD/MM/YYYY", key="gn_dtcompra")
-        c5, c6 = st.columns(2)
-        empresa_nf = c5.selectbox("Empresa da NF de entrada *", EMPRESAS_NF, index=None,
-                                  placeholder="Quem emitiu a entrada...", key="gn_empresa")
-        nf_entrada = c6.text_input("NF de entrada", key="gn_nf")
+        dist_data_compra, dist_nf_compra = None, ""
+        if canal == "Distribuição":
+            st.markdown("**Rastreio da Distribuição** — a garantia se valida pela compra "
+                        "que o DISTRIBUIDOR fez na Propetz:")
+            cd1, cd2 = st.columns(2)
+            dist_data_compra = cd1.date_input("Data da compra do distribuidor", value=None,
+                                              format="DD/MM/YYYY", key="gn_dist_dt")
+            dist_nf_compra = cd2.text_input("NF da compra do distribuidor", key="gn_dist_nf",
+                                            placeholder="Nota da venda Propetz → distribuidor...")
         c7, _ = st.columns([1, 1])
         defeito = c7.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
                                placeholder="Categoria do problema...", key="gn_def")
@@ -1617,7 +1622,7 @@ def page_garantias(products_df, df_clients):
         if st.button("📥 Registrar entrada", type="primary", key="gn_enviar"):
             cliente = (cliente_dist or "").strip() or cliente_txt.strip()
             faltas = [n for n, v in [("canal", canal), ("cliente", cliente), ("produto", produto),
-                                     ("empresa da NF", empresa_nf), ("defeito relatado", defeito)] if not v]
+                                     ("defeito relatado", defeito)] if not v]
             if canal == "Outro" and not canal_outro.strip():
                 faltas.append("qual canal (marcou 'Outro')")
             if defeito == "Outro" and not defeito_outro.strip():
@@ -1630,9 +1635,11 @@ def page_garantias(products_df, df_clients):
                     "canal": canal, "canal_outro": canal_outro.strip(),
                     "cliente": cliente, "produto_sku": sku,
                     "produto_nome": produto.split(" — ", 1)[1] if " — " in produto else produto,
-                    "empresa_nf": empresa_nf,
+                    "empresa_nf": "",   # definida na Bancada, quando o produto chega
                     "data_compra": data_compra.strftime("%Y-%m-%d") if data_compra else "",
-                    "nf_entrada": nf_entrada.strip(),
+                    "nf_entrada": "",   # idem
+                    "dist_data_compra": dist_data_compra.strftime("%Y-%m-%d") if dist_data_compra else "",
+                    "dist_nf_compra": dist_nf_compra.strip(),
                     "defeito": defeito, "defeito_outro": defeito_outro.strip(),
                     "defeito_obs": defeito_obs.strip(),
                     "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
@@ -1685,11 +1692,21 @@ def page_garantias(products_df, df_clients):
                             _dtc = datetime.strptime(_dtc, "%Y-%m-%d").strftime("%d/%m/%Y")
                         except Exception:
                             pass
-                    st.markdown(f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
-                                f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
-                                f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
-                                f"**Compra:** {_dtc or '—'} | **Entrada:** {g.get('criado_em','')} "
-                                f"por {g.get('criado_por','')}")
+                    _linha_meta = (f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
+                                   f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
+                                   f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
+                                   f"**Compra:** {_dtc or '—'} | **Registro:** {g.get('criado_em','')} "
+                                   f"por {g.get('criado_por','')}")
+                    if g.get("canal") == "Distribuição":
+                        _ddc = g.get("dist_data_compra") or ""
+                        if _ddc:
+                            try:
+                                _ddc = datetime.strptime(_ddc, "%Y-%m-%d").strftime("%d/%m/%Y")
+                            except Exception:
+                                pass
+                        _linha_meta += (f"  \n🏷️ **Distribuidor comprou em:** {_ddc or '—'} | "
+                                        f"**NF da compra do distribuidor:** {g.get('dist_nf_compra') or '—'}")
+                    st.markdown(_linha_meta)
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                                 f"— {g.get('defeito_obs') or 'sem obs.'}")
 
@@ -1742,6 +1759,31 @@ def page_garantias(products_df, df_clients):
                         diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)",
                                                 value=g.get("diagnostico_obs", ""),
                                                 height=70, key=f"do_{tk}_{g['id']}")
+                        ce1, ce2 = st.columns(2)
+                        empresa_nf = ce1.selectbox("Empresa da NF de entrada (ao chegar)",
+                                                   EMPRESAS_NF,
+                                                   index=EMPRESAS_NF.index(g["empresa_nf"])
+                                                   if g.get("empresa_nf") in EMPRESAS_NF else None,
+                                                   placeholder="Quem emitiu a entrada...",
+                                                   key=f"emp_{tk}_{g['id']}")
+                        nf_entrada = ce2.text_input("NF de entrada (ao chegar)",
+                                                    value=g.get("nf_entrada", ""),
+                                                    key=f"nfe_{tk}_{g['id']}")
+                        if g.get("canal") == "Distribuição":
+                            def _pdate0(s):
+                                try:
+                                    return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+                                except Exception:
+                                    return None
+                            cdis1, cdis2 = st.columns(2)
+                            dist_data = cdis1.date_input("Data da compra do distribuidor",
+                                                         value=_pdate0(g.get("dist_data_compra")),
+                                                         format="DD/MM/YYYY", key=f"ddt_{tk}_{g['id']}")
+                            dist_nf = cdis2.text_input("NF da compra do distribuidor",
+                                                       value=g.get("dist_nf_compra", ""),
+                                                       key=f"dnf_{tk}_{g['id']}")
+                        else:
+                            dist_data, dist_nf = None, g.get("dist_nf_compra", "")
                         def _pdate(s):
                             try:
                                 return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
@@ -1814,12 +1856,12 @@ def page_garantias(products_df, df_clients):
                         salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
                     if salvar:
                         problemas = []
-                        if novo_status == "Confirmado — aguardando R$ frete" and (not causa or not resultado):
-                            problemas.append("CAUSA e RESULTADO (o serviço precisa estar definido "
-                                             "para confirmar o envio)")
-                        if novo_status == "Concluída":
+                        if novo_status in ("Confirmado — aguardando R$ frete", "Concluída"):
                             if not causa or not resultado:
                                 problemas.append("CAUSA e RESULTADO")
+                            if not empresa_nf or not nf_entrada.strip():
+                                problemas.append("EMPRESA e Nº da NF de entrada (o produto já passou por aqui)")
+                        if novo_status == "Concluída":
                             if (frete_vinda <= 0 or frete_volta <= 0) and not frete_obs.strip():
                                 problemas.append("os FRETES de vinda e volta (se não houve frete, "
                                                  "explique no campo 'Sem frete?')")
@@ -1829,6 +1871,10 @@ def page_garantias(products_df, df_clients):
                             upd = {"status": novo_status, "diagnostico_causa": causa or "",
                                    "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
                                    "resultado": resultado or "", "nf_saida": nf_saida.strip(),
+                                   "empresa_nf": empresa_nf or "", "nf_entrada": nf_entrada.strip(),
+                                   "dist_data_compra": dist_data.strftime("%Y-%m-%d") if dist_data else
+                                                       (g.get("dist_data_compra", "") if g.get("canal") != "Distribuição" else ""),
+                                   "dist_nf_compra": (dist_nf or "").strip(),
                                    "data_chegada": data_chegada.strftime("%Y-%m-%d") if data_chegada else "",
                                    "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
@@ -1951,6 +1997,8 @@ def page_garantias(products_df, df_clients):
                              "Produto": g.get("produto_nome"),
                              "Empresa NF": g.get("empresa_nf", ""),
                              "Data compra": g.get("data_compra", ""),
+                             "Compra distribuidor": g.get("dist_data_compra", ""),
+                             "NF compra distribuidor": g.get("dist_nf_compra", ""),
                              "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
                              "Defeito": _rotulo_outro(g.get("defeito"), g.get("defeito_outro")),
                              "Relato": g.get("defeito_obs"),

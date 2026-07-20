@@ -572,12 +572,15 @@ def _rotulo_outro(valor, detalhe):
     return valor or ""
 
 def _garantia_custo_total(g, custo_map):
-    """Custo real do caso: peças + extra + produto inteiro se trocado por novo."""
+    """Custo real do caso: peças + fretes (vinda e volta) + extra + produto
+    inteiro se trocado por novo."""
     total = 0.0
     for p in g.get("pecas", []):
         c = p.get("custo") or custo_map.get(str(p.get("sku", "")).strip(), 0) or 0
         total += (p.get("qtd", 1) or 1) * c
-    total += g.get("custo_extra", 0) or 0
+    total += g.get("frete_vinda", 0) or 0
+    total += g.get("frete_volta", 0) or 0
+    total += g.get("custo_extra", 0) or 0   # legado (registros antigos)
     if g.get("resultado") == "Trocada por produto novo":
         total += custo_map.get(str(g.get("produto_sku", "")).strip(), 0) or 0
     return round(total, 2)
@@ -1636,132 +1639,178 @@ def page_garantias(products_df, df_clients):
                 else:
                     st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
-    # ---------------- BANCADA / FILA ----------------
+    # ---------------- BANCADA / FILA (sub-abas por status) ----------------
     with tab_bancada:
-        f1, f2 = st.columns([1, 2])
-        filtro_status = f1.multiselect("Status", STATUS_GARANTIA, default=STATUS_ATIVOS, key="gar_fstatus")
-        busca = f2.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
-        vis = [g for g in garantias if g.get("status") in (filtro_status or STATUS_GARANTIA)]
-        if busca.strip():
-            s = busca.strip().lower()
-            vis = [g for g in vis if any(s in str(g.get(k, "")).lower() for k in
-                   ("id", "cliente", "produto_nome", "produto_sku", "empresa_nf", "nf_entrada", "nf_saida"))]
-        vis.sort(key=lambda g: g.get("criado_em", ""), reverse=False)
-        if not vis:
-            st.info("Nenhuma garantia nesse filtro.")
-        for g in vis:
-            dias = ""
-            try:
-                d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
-                dias = f" | {(datetime.now() - d0).days}d na casa"
-            except Exception:
-                pass
-            icone = {"Aberta": "🔴", "Em bancada": "🔧", "Aguardando peça": "📦",
-                     "Concluída": "✅", "Devolvida ao cliente": "🏁", "Cancelada": "🚫"}.get(g.get("status"), "•")
-            with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
-                             f"[{g.get('status')}]{dias}"):
-                _dtc = g.get("data_compra") or ""
-                if _dtc:
-                    try:
-                        _dtc = datetime.strptime(_dtc, "%Y-%m-%d").strftime("%d/%m/%Y")
-                    except Exception:
-                        pass
-                st.markdown(f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
-                            f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
-                            f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
-                            f"**Compra:** {_dtc or '—'} | **Entrada:** {g.get('criado_em','')} "
-                            f"por {g.get('criado_por','')}")
-                st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
-                            f"— {g.get('defeito_obs') or 'sem obs.'}")
+        busca = st.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
 
-                _fechada = g.get("status") in STATUS_FINALIZADOS
-                if _fechada and not can_edit_garantia_fechada():
-                    # Marcos/Pedro: finalizada = somente leitura
-                    st.markdown(f"**Causa:** {g.get('diagnostico_causa') or '—'} | "
-                                f"**Serviço:** {g.get('diagnostico_obs') or '—'} | "
-                                f"**Resultado:** {g.get('resultado') or '—'} | "
-                                f"**NF saída:** {g.get('nf_saida') or '—'} | "
-                                f"**Custo do caso:** {fmt_brl_full(g.get('custo_total', 0) or 0)}")
-                    if g.get("pecas"):
-                        st.markdown("**Peças:** " + "; ".join(
-                            f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g["pecas"]))
-                    st.info("🔒 Garantia finalizada. Correções, reabertura ou cancelamento: "
-                            "somente o master da garantia (Jackson) ou o admin.")
+        def _filtra(status_lista):
+            out = [g for g in garantias if g.get("status") in status_lista]
+            if busca.strip():
+                s = busca.strip().lower()
+                out = [g for g in out if any(s in str(g.get(k, "")).lower() for k in
+                       ("id", "cliente", "produto_nome", "produto_sku", "empresa_nf",
+                        "nf_entrada", "nf_saida"))]
+            out.sort(key=lambda g: g.get("criado_em", ""))
+            return out
+
+        def _render_fila(lista, tk):
+            # tk = prefixo da sub-aba nas keys: a MESMA garantia aparece em várias
+            # sub-abas ao mesmo tempo — sem prefixo, as keys duplicariam e o app cai.
+            if not lista:
+                st.info("Nenhuma garantia aqui.")
+                return
+            for g in lista:
+                dias = ""
+                try:
+                    d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
+                    dias = f" | {(datetime.now() - d0).days}d na casa"
+                except Exception:
+                    pass
+                icone = {"Aberta": "🔴", "Em bancada": "🔧", "Aguardando peça": "📦",
+                         "Concluída": "✅", "Devolvida ao cliente": "🏁", "Cancelada": "🚫"}.get(g.get("status"), "•")
+                with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
+                                 f"[{g.get('status')}]{dias}"):
+                    _dtc = g.get("data_compra") or ""
+                    if _dtc:
+                        try:
+                            _dtc = datetime.strptime(_dtc, "%Y-%m-%d").strftime("%d/%m/%Y")
+                        except Exception:
+                            pass
+                    st.markdown(f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
+                                f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
+                                f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
+                                f"**Compra:** {_dtc or '—'} | **Entrada:** {g.get('criado_em','')} "
+                                f"por {g.get('criado_por','')}")
+                    st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
+                                f"— {g.get('defeito_obs') or 'sem obs.'}")
+
+                    _fechada = g.get("status") in STATUS_FINALIZADOS
+                    if _fechada and not can_edit_garantia_fechada():
+                        # Marcos/Pedro: finalizada = somente leitura
+                        _fretes = f"vinda {fmt_brl_full(g.get('frete_vinda', 0) or 0)} / " \
+                                  f"volta {fmt_brl_full(g.get('frete_volta', 0) or 0)}"
+                        if g.get("frete_obs"):
+                            _fretes += f" ({g['frete_obs']})"
+                        st.markdown(f"**Causa:** {g.get('diagnostico_causa') or '—'} | "
+                                    f"**Serviço:** {g.get('diagnostico_obs') or '—'} | "
+                                    f"**Resultado:** {g.get('resultado') or '—'} | "
+                                    f"**NF saída:** {g.get('nf_saida') or '—'} | "
+                                    f"**Fretes:** {_fretes} | "
+                                    f"**Custo do caso:** {fmt_brl_full(g.get('custo_total', 0) or 0)}")
+                        if g.get("pecas"):
+                            st.markdown("**Peças:** " + "; ".join(
+                                f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g["pecas"]))
+                        st.info("🔒 Garantia finalizada. Correções, reabertura ou cancelamento: "
+                                "somente o master da garantia (Jacson) ou o admin.")
+                        if g.get("historico"):
+                            st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
+                                                          for h in g["historico"][-4:]))
+                        continue
+
+                    if _fechada and can_edit_garantia_fechada():
+                        st.warning("🔓 Modo master: esta garantia está finalizada — alterações aqui "
+                                   "reabrem/corrigem o registro e ficam no histórico.")
+                    # "Cancelada" só aparece para master/admin (cancelar = exclusão lógica)
+                    _status_opcoes = STATUS_GARANTIA if can_edit_garantia_fechada() \
+                        else [s for s in STATUS_GARANTIA if s != "Cancelada"]
+                    with st.form(f"gar_upd_{tk}_{g['id']}"):
+                        c1, c2 = st.columns(2)
+                        novo_status = c1.selectbox("Status", _status_opcoes,
+                                                   index=_status_opcoes.index(g.get("status", "Aberta"))
+                                                   if g.get("status", "Aberta") in _status_opcoes else 0,
+                                                   key=f"st_{tk}_{g['id']}")
+                        causa = c2.selectbox("Causa (diagnóstico)", CAUSAS_GARANTIA,
+                                             index=CAUSAS_GARANTIA.index(g["diagnostico_causa"])
+                                             if g.get("diagnostico_causa") in CAUSAS_GARANTIA else None,
+                                             placeholder="Qual foi a causa real...", key=f"ca_{tk}_{g['id']}")
+                        diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)",
+                                                value=g.get("diagnostico_obs", ""),
+                                                height=70, key=f"do_{tk}_{g['id']}")
+                        st.markdown("**Peças trocadas** (até 3 — custo puxa da Base Mãe automaticamente):")
+                        pecas_atuais = g.get("pecas", [])
+                        pecas_novas = []
+                        for slot in range(3):
+                            pc1, pc2 = st.columns([3, 1])
+                            atual = pecas_atuais[slot] if slot < len(pecas_atuais) else None
+                            atual_opt = None
+                            if atual:
+                                # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
+                                _sku_alvo = str(atual.get("sku", "")).strip()
+                                atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
+                            psel = pc1.selectbox(f"Peça {slot+1}", prod_opts,
+                                                 index=prod_opts.index(atual_opt) if atual_opt else None,
+                                                 placeholder="—", key=f"p{slot}_{tk}_{g['id']}")
+                            pqtd = pc2.number_input("Qtd", 1, 99,
+                                                    value=int(atual.get("qtd", 1)) if atual else 1,
+                                                    key=f"q{slot}_{tk}_{g['id']}")
+                            if psel:
+                                psku = _sku_de(psel)
+                                pecas_novas.append({"sku": psku,
+                                                    "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
+                                                    "qtd": int(pqtd),
+                                                    "custo": custo_map.get(psku, 0)})
+                        c3, c4 = st.columns(2)
+                        resultado = c3.selectbox("Resultado", RESULTADOS_GARANTIA,
+                                                 index=RESULTADOS_GARANTIA.index(g["resultado"])
+                                                 if g.get("resultado") in RESULTADOS_GARANTIA else None,
+                                                 placeholder="Ao concluir...", key=f"re_{tk}_{g['id']}")
+                        nf_saida = c4.text_input("NF de saída", value=g.get("nf_saida", ""),
+                                                 key=f"nf_{tk}_{g['id']}")
+                        c5, c6 = st.columns(2)
+                        frete_vinda = c5.number_input("Frete VINDA R$ *", 0.0, 99999.0,
+                                                      value=float(g.get("frete_vinda", 0) or 0),
+                                                      key=f"fv_{tk}_{g['id']}")
+                        frete_volta = c6.number_input("Frete VOLTA R$ *", 0.0, 99999.0,
+                                                      value=float(g.get("frete_volta", 0) or 0),
+                                                      key=f"fb_{tk}_{g['id']}")
+                        frete_obs = st.text_input("Sem frete? Explique (retirada pessoal, cliente pagou...)",
+                                                  value=g.get("frete_obs", ""), key=f"fo_{tk}_{g['id']}")
+                        salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
+                    if salvar:
+                        problemas = []
+                        if novo_status in ("Concluída", "Devolvida ao cliente"):
+                            if not causa or not resultado:
+                                problemas.append("CAUSA e RESULTADO")
+                            if (frete_vinda <= 0 or frete_volta <= 0) and not frete_obs.strip():
+                                problemas.append("os FRETES de vinda e volta (se não houve frete, "
+                                                 "explique no campo 'Sem frete?')")
+                        if problemas:
+                            st.error("⚠️ Para concluir, informe: " + " e ".join(problemas) + ". Nada foi salvo.")
+                        else:
+                            upd = {"status": novo_status, "diagnostico_causa": causa or "",
+                                   "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
+                                   "resultado": resultado or "", "nf_saida": nf_saida.strip(),
+                                   "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
+                                   "frete_obs": frete_obs.strip()}
+                            upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
+                            if novo_status in ("Concluída", "Devolvida ao cliente") and not g.get("concluido_em"):
+                                upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            _acao = f"Status → {novo_status}"
+                            if _fechada:
+                                _acao = f"CORREÇÃO PÓS-FECHAMENTO (era {g.get('status')}): {_acao}"
+                            if update_garantia(g["id"], upd, _acao):
+                                st.success(f"✅ {g['id']} atualizada (custo do caso: "
+                                           f"{fmt_brl_full(upd['custo_total'])}).")
+                                st.rerun()
+                            else:
+                                st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
                     if g.get("historico"):
                         st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
                                                       for h in g["historico"][-4:]))
-                    continue
 
-                if _fechada and can_edit_garantia_fechada():
-                    st.warning("🔓 Modo master: esta garantia está finalizada — alterações aqui "
-                               "reabrem/corrigem o registro e ficam no histórico.")
-                # "Cancelada" só aparece para master/admin (cancelar = exclusão lógica)
-                _status_opcoes = STATUS_GARANTIA if can_edit_garantia_fechada() \
-                    else [s for s in STATUS_GARANTIA if s != "Cancelada"]
-                with st.form(f"gar_upd_{g['id']}"):
-                    c1, c2 = st.columns(2)
-                    novo_status = c1.selectbox("Status", _status_opcoes,
-                                               index=_status_opcoes.index(g.get("status", "Aberta"))
-                                               if g.get("status", "Aberta") in _status_opcoes else 0,
-                                               key=f"st_{g['id']}")
-                    causa = c2.selectbox("Causa (diagnóstico)", CAUSAS_GARANTIA,
-                                         index=CAUSAS_GARANTIA.index(g["diagnostico_causa"])
-                                         if g.get("diagnostico_causa") in CAUSAS_GARANTIA else None,
-                                         placeholder="Qual foi a causa real...", key=f"ca_{g['id']}")
-                    diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)", value=g.get("diagnostico_obs", ""),
-                                            height=70, key=f"do_{g['id']}")
-                    st.markdown("**Peças trocadas** (até 3 — custo puxa da Base Mãe automaticamente):")
-                    pecas_atuais = g.get("pecas", [])
-                    pecas_novas = []
-                    for slot in range(3):
-                        pc1, pc2 = st.columns([3, 1])
-                        atual = pecas_atuais[slot] if slot < len(pecas_atuais) else None
-                        atual_opt = None
-                        if atual:
-                            # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
-                            _sku_alvo = str(atual.get("sku", "")).strip()
-                            atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
-                        psel = pc1.selectbox(f"Peça {slot+1}", prod_opts,
-                                             index=prod_opts.index(atual_opt) if atual_opt else None,
-                                             placeholder="—", key=f"p{slot}_{g['id']}")
-                        pqtd = pc2.number_input("Qtd", 1, 99, value=int(atual.get("qtd", 1)) if atual else 1,
-                                                key=f"q{slot}_{g['id']}")
-                        if psel:
-                            psku = _sku_de(psel)
-                            pecas_novas.append({"sku": psku,
-                                                "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
-                                                "qtd": int(pqtd),
-                                                "custo": custo_map.get(psku, 0)})
-                    c3, c4, c5 = st.columns(3)
-                    resultado = c3.selectbox("Resultado", RESULTADOS_GARANTIA,
-                                             index=RESULTADOS_GARANTIA.index(g["resultado"])
-                                             if g.get("resultado") in RESULTADOS_GARANTIA else None,
-                                             placeholder="Ao concluir...", key=f"re_{g['id']}")
-                    nf_saida = c4.text_input("NF de saída", value=g.get("nf_saida", ""), key=f"nf_{g['id']}")
-                    custo_extra = c5.number_input("Custo extra R$ (frete etc.)", 0.0, 99999.0,
-                                                  value=float(g.get("custo_extra", 0) or 0), key=f"ce_{g['id']}")
-                    salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
-                if salvar:
-                    if novo_status in ("Concluída", "Devolvida ao cliente") and (not causa or not resultado):
-                        st.error("⚠️ Para concluir, informe a CAUSA e o RESULTADO. Nada foi salvo.")
-                    else:
-                        upd = {"status": novo_status, "diagnostico_causa": causa or "",
-                               "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
-                               "resultado": resultado or "", "nf_saida": nf_saida.strip(),
-                               "custo_extra": float(custo_extra)}
-                        upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
-                        if novo_status in ("Concluída", "Devolvida ao cliente") and not g.get("concluido_em"):
-                            upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        _acao = f"Status → {novo_status}"
-                        if _fechada:
-                            _acao = f"CORREÇÃO PÓS-FECHAMENTO (era {g.get('status')}): {_acao}"
-                        if update_garantia(g["id"], upd, _acao):
-                            st.success(f"✅ {g['id']} atualizada (custo do caso: {fmt_brl_full(upd['custo_total'])}).")
-                            st.rerun()
-                        else:
-                            st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
-                if g.get("historico"):
-                    st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}" for h in g["historico"][-4:]))
+        _sub_defs = [("⚡ Ativas", STATUS_ATIVOS, "atv"),
+                     ("🔴 Abertas", ["Aberta"], "ab"),
+                     ("🔧 Em bancada", ["Em bancada"], "bc"),
+                     ("📦 Aguard. peça", ["Aguardando peça"], "pc"),
+                     ("✅ Concluídas", ["Concluída"], "co"),
+                     ("🏁 Devolvidas", ["Devolvida ao cliente"], "dv"),
+                     ("🚫 Canceladas", ["Cancelada"], "cn"),
+                     ("📚 Todas", STATUS_GARANTIA, "td")]
+        _listas = {tk: _filtra(sts) for _, sts, tk in _sub_defs}
+        _subtabs = st.tabs([f"{rot} ({len(_listas[tk])})" for rot, _, tk in _sub_defs])
+        for (_rot, _sts, tk), _stab in zip(_sub_defs, _subtabs):
+            with _stab:
+                _render_fila(_listas[tk], tk)
 
     # ---------------- PAINEL ----------------
     with tab_painel:
@@ -1842,6 +1891,8 @@ def page_garantias(products_df, df_clients):
                              "Relato": g.get("defeito_obs"),
                              "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
                              "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g.get("pecas", [])),
+                             "Frete vinda": g.get("frete_vinda", 0), "Frete volta": g.get("frete_volta", 0),
+                             "Sem frete (justif.)": g.get("frete_obs", ""),
                              "Custo total": g.get("custo_total", 0), "Resultado": g.get("resultado"),
                              "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
                              "Registrado por": g.get("criado_por")})

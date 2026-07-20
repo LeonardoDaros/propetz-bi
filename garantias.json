@@ -1,0 +1,35 @@
+{
+ "garantias": [
+  {
+   "canal": "Distribuição",
+   "canal_outro": "",
+   "cliente": "13.368.815 Alexandre Henrique | Sn",
+   "produto_sku": "PARAFUS25",
+   "produto_nome": "Parafuso Philips Flangeado Drywall Agulha Zincado Tam 4.2X13, Contendo 100 Unidades Cada",
+   "empresa_nf": "Filial",
+   "data_compra": "2025-01-13",
+   "nf_entrada": "15569",
+   "defeito": "Carcaça quebrada",
+   "defeito_outro": "",
+   "defeito_obs": "lalala lalala lalala",
+   "pecas": [],
+   "custo_extra": 0,
+   "diagnostico_causa": "",
+   "diagnostico_obs": "",
+   "resultado": "",
+   "nf_saida": "",
+   "custo_total": 0,
+   "id": "G-0001",
+   "criado_em": "2026-07-20 11:36",
+   "criado_por": "Marcos",
+   "status": "Aberta",
+   "historico": [
+    {
+     "em": "2026-07-20 11:36",
+     "por": "Marcos",
+     "acao": "Registro criado"
+    }
+   ]
+  }
+ ]
+}

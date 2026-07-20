@@ -501,6 +501,7 @@ GARANTIAS_FILE = os.path.join(os.path.dirname(__file__), "garantias.json")
 STATUS_GARANTIA = ["Aberta", "Em bancada", "Aguardando peça", "Concluída", "Devolvida ao cliente", "Cancelada"]
 STATUS_ATIVOS = ["Aberta", "Em bancada", "Aguardando peça"]
 CANAIS_GARANTIA = ["Distribuição", "Varejo", "Feira", "Site", "Outro"]
+EMPRESAS_NF = ["Matriz", "Filial", "Filial Foz", "TradeCorp"]
 DEFEITOS_GARANTIA = ["Não liga", "Motor", "Bateria / não carrega", "Carregador / fonte", "Lâmina / corte",
                      "Botão / interruptor", "Carcaça quebrada", "Ruído / vibração", "Esquenta demais",
                      "Display / luz", "Dano de transporte", "Outro"]
@@ -556,6 +557,12 @@ def update_garantia(gid, updates, acao):
 
     _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
     return ok
+
+def _rotulo_outro(valor, detalhe):
+    """'Outro' vira 'Outro (detalhe)' quando o usuário especificou."""
+    if valor == "Outro" and str(detalhe or "").strip():
+        return f"Outro ({str(detalhe).strip()})"
+    return valor or ""
 
 def _garantia_custo_total(g, custo_map):
     """Custo real do caso: peças + extra + produto inteiro se trocado por novo."""
@@ -1555,40 +1562,70 @@ def page_garantias(products_df, df_clients):
     # ---------------- NOVA GARANTIA ----------------
     with tab_novo:
         st.caption("Registro de entrada — 2 minutos por caso. O que a NF não conta fica registrado aqui.")
-        with st.form("form_nova_garantia"):
-            c1, c2 = st.columns(2)
-            canal = c1.selectbox("Canal *", CANAIS_GARANTIA, index=None, placeholder="De onde vem o cliente...")
-            cliente_dist = c2.selectbox("Cliente da Distribuição (se for)", cli_dist, index=None,
-                                        placeholder="Buscar na base...")
-            cliente_txt = st.text_input("Cliente (nome/razão — obrigatório se não achou acima)")
-            c3, c4 = st.columns([2, 1])
-            produto = c3.selectbox("Produto *", prod_opts, index=None, placeholder="Buscar por código ou nome...")
-            num_serie = c4.text_input("Nº de série")
-            c5, c6 = st.columns(2)
-            nf_entrada = c5.text_input("NF de entrada")
-            defeito = c6.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
-                                   placeholder="Categoria do problema...")
-            defeito_obs = st.text_area("Relato do cliente / observações", height=80,
-                                       placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
-            enviar = st.form_submit_button("📥 Registrar entrada", type="primary")
-        if enviar:
+        if st.session_state.pop("gar_flash", None):
+            st.success(st.session_state.pop("gar_flash_msg", "✅ Registrado."))
+        # Campos FORA de st.form de propósito: marcar "Outro" mostra o campo
+        # de especificação NA HORA (form fechado não reage antes do submit).
+        _NK = ("gn_canal", "gn_canal_outro", "gn_clidist", "gn_clitxt", "gn_prod",
+               "gn_dtcompra", "gn_empresa", "gn_nf", "gn_def", "gn_def_outro", "gn_obs")
+        c1, c2 = st.columns(2)
+        canal = c1.selectbox("Canal *", CANAIS_GARANTIA, index=None,
+                             placeholder="De onde vem o cliente...", key="gn_canal")
+        canal_outro = ""
+        if canal == "Outro":
+            canal_outro = c1.text_input("Qual canal? *", key="gn_canal_outro",
+                                        placeholder="Ex.: marketplace, representante...")
+        cliente_dist = c2.selectbox("Cliente da Distribuição (se for)", cli_dist, index=None,
+                                    placeholder="Buscar na base...", key="gn_clidist")
+        cliente_txt = st.text_input("Cliente (nome/razão — obrigatório se não achou acima)", key="gn_clitxt")
+        c3, c4 = st.columns([2, 1])
+        produto = c3.selectbox("Produto *", prod_opts, index=None,
+                               placeholder="Buscar por código ou nome...", key="gn_prod")
+        data_compra = c4.date_input("Data da compra (se souber)", value=None,
+                                    format="DD/MM/YYYY", key="gn_dtcompra")
+        c5, c6 = st.columns(2)
+        empresa_nf = c5.selectbox("Empresa da NF de entrada *", EMPRESAS_NF, index=None,
+                                  placeholder="Quem emitiu a entrada...", key="gn_empresa")
+        nf_entrada = c6.text_input("NF de entrada", key="gn_nf")
+        c7, _ = st.columns([1, 1])
+        defeito = c7.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
+                               placeholder="Categoria do problema...", key="gn_def")
+        defeito_outro = ""
+        if defeito == "Outro":
+            defeito_outro = c7.text_input("Qual defeito? *", key="gn_def_outro",
+                                          placeholder="Descreva em poucas palavras...")
+        defeito_obs = st.text_area("Relato do cliente / observações", height=80, key="gn_obs",
+                                   placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
+        if st.button("📥 Registrar entrada", type="primary", key="gn_enviar"):
             cliente = (cliente_dist or "").strip() or cliente_txt.strip()
-            faltas = [n for n, v in [("canal", canal), ("cliente", cliente),
-                                     ("produto", produto), ("defeito relatado", defeito)] if not v]
+            faltas = [n for n, v in [("canal", canal), ("cliente", cliente), ("produto", produto),
+                                     ("empresa da NF", empresa_nf), ("defeito relatado", defeito)] if not v]
+            if canal == "Outro" and not canal_outro.strip():
+                faltas.append("qual canal (marcou 'Outro')")
+            if defeito == "Outro" and not defeito_outro.strip():
+                faltas.append("qual defeito (marcou 'Outro')")
             if faltas:
                 st.error("⚠️ Preencha: " + ", ".join(faltas) + ". Nada foi registrado.")
             else:
                 sku = _sku_de(produto)
                 gid, ok = add_garantia({
-                    "canal": canal, "cliente": cliente, "produto_sku": sku,
+                    "canal": canal, "canal_outro": canal_outro.strip(),
+                    "cliente": cliente, "produto_sku": sku,
                     "produto_nome": produto.split(" — ", 1)[1] if " — " in produto else produto,
-                    "num_serie": num_serie.strip(), "nf_entrada": nf_entrada.strip(),
-                    "defeito": defeito, "defeito_obs": defeito_obs.strip(),
+                    "empresa_nf": empresa_nf,
+                    "data_compra": data_compra.strftime("%Y-%m-%d") if data_compra else "",
+                    "nf_entrada": nf_entrada.strip(),
+                    "defeito": defeito, "defeito_outro": defeito_outro.strip(),
+                    "defeito_obs": defeito_obs.strip(),
                     "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
                     "resultado": "", "nf_saida": "", "custo_total": 0,
                 })
                 if ok:
-                    st.success(f"✅ Garantia **{gid}** registrada — já está na fila da Bancada.")
+                    for k in _NK:
+                        st.session_state.pop(k, None)  # limpa o formulário p/ o próximo caso
+                    st.session_state["gar_flash"] = True
+                    st.session_state["gar_flash_msg"] = f"✅ Garantia **{gid}** registrada — já está na fila da Bancada."
+                    st.rerun()
                 else:
                     st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
@@ -1596,12 +1633,12 @@ def page_garantias(products_df, df_clients):
     with tab_bancada:
         f1, f2 = st.columns([1, 2])
         filtro_status = f1.multiselect("Status", STATUS_GARANTIA, default=STATUS_ATIVOS, key="gar_fstatus")
-        busca = f2.text_input("🔍 Buscar (id, cliente, produto, série, NF)", key="gar_busca")
+        busca = f2.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
         vis = [g for g in garantias if g.get("status") in (filtro_status or STATUS_GARANTIA)]
         if busca.strip():
             s = busca.strip().lower()
             vis = [g for g in vis if any(s in str(g.get(k, "")).lower() for k in
-                   ("id", "cliente", "produto_nome", "produto_sku", "num_serie", "nf_entrada", "nf_saida"))]
+                   ("id", "cliente", "produto_nome", "produto_sku", "empresa_nf", "nf_entrada", "nf_saida"))]
         vis.sort(key=lambda g: g.get("criado_em", ""), reverse=False)
         if not vis:
             st.info("Nenhuma garantia nesse filtro.")
@@ -1616,10 +1653,19 @@ def page_garantias(products_df, df_clients):
                      "Concluída": "✅", "Devolvida ao cliente": "🏁", "Cancelada": "🚫"}.get(g.get("status"), "•")
             with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
                              f"[{g.get('status')}]{dias}"):
-                st.markdown(f"**Canal:** {g.get('canal','')} | **Série:** {g.get('num_serie') or '—'} | "
-                            f"**NF entrada:** {g.get('nf_entrada') or '—'} | **Entrada:** {g.get('criado_em','')} "
+                _dtc = g.get("data_compra") or ""
+                if _dtc:
+                    try:
+                        _dtc = datetime.strptime(_dtc, "%Y-%m-%d").strftime("%d/%m/%Y")
+                    except Exception:
+                        pass
+                st.markdown(f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
+                            f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
+                            f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
+                            f"**Compra:** {_dtc or '—'} | **Entrada:** {g.get('criado_em','')} "
                             f"por {g.get('criado_por','')}")
-                st.markdown(f"**Defeito relatado:** {g.get('defeito','')} — {g.get('defeito_obs') or 'sem obs.'}")
+                st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
+                            f"— {g.get('defeito_obs') or 'sem obs.'}")
                 with st.form(f"gar_upd_{g['id']}"):
                     c1, c2 = st.columns(2)
                     novo_status = c1.selectbox("Status", STATUS_GARANTIA,
@@ -1749,11 +1795,15 @@ def page_garantias(products_df, df_clients):
                                      height=min(350, 35 * len(dfp) + 38))
             flat = []
             for g in garantias:
-                flat.append({"ID": g["id"], "Status": g.get("status"), "Canal": g.get("canal"),
+                flat.append({"ID": g["id"], "Status": g.get("status"),
+                             "Canal": _rotulo_outro(g.get("canal"), g.get("canal_outro")),
                              "Cliente": g.get("cliente"), "SKU": g.get("produto_sku"),
-                             "Produto": g.get("produto_nome"), "Série": g.get("num_serie"),
+                             "Produto": g.get("produto_nome"),
+                             "Empresa NF": g.get("empresa_nf", ""),
+                             "Data compra": g.get("data_compra", ""),
                              "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
-                             "Defeito": g.get("defeito"), "Relato": g.get("defeito_obs"),
+                             "Defeito": _rotulo_outro(g.get("defeito"), g.get("defeito_outro")),
+                             "Relato": g.get("defeito_obs"),
                              "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
                              "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g.get("pecas", [])),
                              "Custo total": g.get("custo_total", 0), "Resultado": g.get("resultado"),

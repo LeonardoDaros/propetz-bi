@@ -500,6 +500,7 @@ GARANTIAS_FILE = os.path.join(os.path.dirname(__file__), "garantias.json")
 
 STATUS_GARANTIA = ["Aberta", "Em bancada", "Aguardando peça", "Concluída", "Devolvida ao cliente", "Cancelada"]
 STATUS_ATIVOS = ["Aberta", "Em bancada", "Aguardando peça"]
+STATUS_FINALIZADOS = ["Concluída", "Devolvida ao cliente", "Cancelada"]
 CANAIS_GARANTIA = ["Distribuição", "Varejo", "Feira", "Site", "Outro"]
 EMPRESAS_NF = ["Matriz", "Filial", "Filial Foz", "TradeCorp"]
 DEFEITOS_GARANTIA = ["Não liga", "Motor", "Bateria / não carrega", "Carregador / fonte", "Lâmina / corte",
@@ -511,7 +512,13 @@ RESULTADOS_GARANTIA = ["Consertada", "Trocada por produto novo", "Reembolso", "R
                        "Devolvida sem conserto"]
 
 def can_manage_garantias():
-    return st.session_state.get('role') in ('admin', 'diretor', 'garantia')
+    return st.session_state.get('role') in ('admin', 'diretor', 'garantia', 'garantia_master')
+
+def can_edit_garantia_fechada():
+    """Garantia finalizada (Concluída/Devolvida/Cancelada) só pode ser reaberta,
+    corrigida ou cancelada pelo MASTER da garantia (Jackson) ou pelo admin.
+    Marcos/Pedro operam o dia a dia; correção pós-fechamento é controlada."""
+    return st.session_state.get('role') in ('admin', 'garantia_master')
 
 def load_garantias():
     data = _read_state_json("garantias.json", GARANTIAS_FILE, {"garantias": []})
@@ -1666,10 +1673,36 @@ def page_garantias(products_df, df_clients):
                             f"por {g.get('criado_por','')}")
                 st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                             f"— {g.get('defeito_obs') or 'sem obs.'}")
+
+                _fechada = g.get("status") in STATUS_FINALIZADOS
+                if _fechada and not can_edit_garantia_fechada():
+                    # Marcos/Pedro: finalizada = somente leitura
+                    st.markdown(f"**Causa:** {g.get('diagnostico_causa') or '—'} | "
+                                f"**Serviço:** {g.get('diagnostico_obs') or '—'} | "
+                                f"**Resultado:** {g.get('resultado') or '—'} | "
+                                f"**NF saída:** {g.get('nf_saida') or '—'} | "
+                                f"**Custo do caso:** {fmt_brl_full(g.get('custo_total', 0) or 0)}")
+                    if g.get("pecas"):
+                        st.markdown("**Peças:** " + "; ".join(
+                            f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g["pecas"]))
+                    st.info("🔒 Garantia finalizada. Correções, reabertura ou cancelamento: "
+                            "somente o master da garantia (Jackson) ou o admin.")
+                    if g.get("historico"):
+                        st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
+                                                      for h in g["historico"][-4:]))
+                    continue
+
+                if _fechada and can_edit_garantia_fechada():
+                    st.warning("🔓 Modo master: esta garantia está finalizada — alterações aqui "
+                               "reabrem/corrigem o registro e ficam no histórico.")
+                # "Cancelada" só aparece para master/admin (cancelar = exclusão lógica)
+                _status_opcoes = STATUS_GARANTIA if can_edit_garantia_fechada() \
+                    else [s for s in STATUS_GARANTIA if s != "Cancelada"]
                 with st.form(f"gar_upd_{g['id']}"):
                     c1, c2 = st.columns(2)
-                    novo_status = c1.selectbox("Status", STATUS_GARANTIA,
-                                               index=STATUS_GARANTIA.index(g.get("status", "Aberta")),
+                    novo_status = c1.selectbox("Status", _status_opcoes,
+                                               index=_status_opcoes.index(g.get("status", "Aberta"))
+                                               if g.get("status", "Aberta") in _status_opcoes else 0,
                                                key=f"st_{g['id']}")
                     causa = c2.selectbox("Causa (diagnóstico)", CAUSAS_GARANTIA,
                                          index=CAUSAS_GARANTIA.index(g["diagnostico_causa"])
@@ -1719,7 +1752,10 @@ def page_garantias(products_df, df_clients):
                         upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
                         if novo_status in ("Concluída", "Devolvida ao cliente") and not g.get("concluido_em"):
                             upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        if update_garantia(g["id"], upd, f"Status → {novo_status}"):
+                        _acao = f"Status → {novo_status}"
+                        if _fechada:
+                            _acao = f"CORREÇÃO PÓS-FECHAMENTO (era {g.get('status')}): {_acao}"
+                        if update_garantia(g["id"], upd, _acao):
                             st.success(f"✅ {g['id']} atualizada (custo do caso: {fmt_brl_full(upd['custo_total'])}).")
                             st.rerun()
                         else:
@@ -3644,9 +3680,9 @@ def main():
     with st.sidebar:
         # --- User greeting (compact) ---
         _role = st.session_state['role']
-        _role_icon = {'admin': '🔑', 'diretor': '👔', 'garantia': '🔧'}.get(_role, '👤')
+        _role_icon = {'admin': '🔑', 'diretor': '👔', 'garantia': '🔧', 'garantia_master': '🔧'}.get(_role, '👤')
         _role_label = {'admin': 'Admin', 'diretor': 'Diretora', 'vendedor': 'Vendedor',
-                       'garantia': 'Garantia'}.get(_role, _role.title())
+                       'garantia': 'Garantia', 'garantia_master': 'Garantia (Master)'}.get(_role, _role.title())
         st.markdown(f"""
         <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px 0">
             <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
@@ -3659,7 +3695,7 @@ def main():
         """, unsafe_allow_html=True)
 
         # --- Navigation ---
-        if st.session_state["role"] == "garantia":
+        if st.session_state["role"] in ("garantia", "garantia_master"):
             pages = {"🔧 Garantias": "garantia"}
         elif has_full_data_access():
             pages = {

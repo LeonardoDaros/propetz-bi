@@ -127,6 +127,42 @@
    "frete_volta": 25.0,
    "frete_obs": "",
    "concluido_em": "2026-07-20 12:18"
+  },
+  {
+   "canal": "Distribuição",
+   "canal_outro": "",
+   "cliente": "27.344.909 Edileia Aparecida Luiz Vicentini",
+   "produto_sku": "E1CGA-200",
+   "produto_nome": "RASQUEADEIRA CLASSICA RETA GRANDE AZUL PROPETZ",
+   "empresa_nf": "",
+   "data_compra": "2026-05-20",
+   "nf_entrada": "",
+   "dist_data_compra": "",
+   "dist_nf_compra": "",
+   "cliente_final": "JOAO FAZLIAS",
+   "cliente_final_nf": "258781",
+   "cliente_final_nf_chave": "",
+   "defeito": "Motor",
+   "defeito_outro": "",
+   "defeito_obs": "PFSDFDSOFPDS FPDS",
+   "pecas": [],
+   "custo_extra": 0,
+   "diagnostico_causa": "",
+   "diagnostico_obs": "",
+   "resultado": "",
+   "nf_saida": "",
+   "custo_total": 0,
+   "id": "G-0003",
+   "criado_em": "2026-07-20 13:44",
+   "criado_por": "Jacson",
+   "status": "Aguardando chegada",
+   "historico": [
+    {
+     "em": "2026-07-20 13:44",
+     "por": "Jacson",
+     "acao": "Registro criado"
+    }
+   ]
   }
  ]
 }

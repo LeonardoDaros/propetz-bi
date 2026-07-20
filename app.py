@@ -574,6 +574,15 @@ def update_garantia(gid, updates, acao):
     _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
     return ok
 
+def delete_garantia(gid):
+    """EXCLUSÃO REAL (some da base, sem rastro) — SÓ o admin, para limpar
+    simulações/testes. Caso real nunca se exclui: usa o status Cancelada
+    (exclusão lógica com histórico)."""
+    def apply(d):
+        return {"garantias": [g for g in d.get("garantias", []) if g.get("id") != gid]}
+    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+    return ok
+
 def _rotulo_outro(valor, detalhe):
     """'Outro' vira 'Outro (detalhe)' quando o usuário especificou."""
     if valor == "Outro" and str(detalhe or "").strip():
@@ -1703,6 +1712,9 @@ def page_garantias(products_df, df_clients):
 
     # ---------------- BANCADA / FILA (sub-abas por status) ----------------
     with tab_bancada:
+        _fld = st.session_state.pop("gar_flash_del", None)
+        if _fld:
+            st.success(_fld)
         busca = st.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
 
         def _filtra(status_lista):
@@ -1805,9 +1817,11 @@ def page_garantias(products_df, df_clients):
                                              index=CAUSAS_GARANTIA.index(g["diagnostico_causa"])
                                              if g.get("diagnostico_causa") in CAUSAS_GARANTIA else None,
                                              placeholder="Qual foi a causa real...", key=f"ca_{tk}_{g['id']}")
-                        diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)",
+                        diag_obs = st.text_area("O que foi feito (diagnóstico/serviço) *",
                                                 value=g.get("diagnostico_obs", ""),
-                                                height=70, key=f"do_{tk}_{g['id']}")
+                                                height=70, key=f"do_{tk}_{g['id']}",
+                                                help="Obrigatório para salvar a partir do status "
+                                                     "'Aguardando peça' (se já mexeu, conta o que fez).")
                         ce1, ce2 = st.columns(2)
                         empresa_nf = ce1.selectbox("Empresa da NF de entrada (ao chegar)",
                                                    EMPRESAS_NF,
@@ -1899,6 +1913,11 @@ def page_garantias(products_df, df_clients):
                         salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
                     if salvar:
                         problemas = []
+                        # a partir de Aguardando peça já houve trabalho na máquina:
+                        # não se salva sem contar O QUE FOI FEITO
+                        if novo_status in ("Aguardando peça", "Confirmado — aguardando R$ frete",
+                                           "Concluída") and not diag_obs.strip():
+                            problemas.append("O QUE FOI FEITO (diagnóstico/serviço)")
                         if novo_status in ("Confirmado — aguardando R$ frete", "Concluída"):
                             if not causa or not resultado:
                                 problemas.append("CAUSA e RESULTADO")
@@ -1938,6 +1957,22 @@ def page_garantias(products_df, df_clients):
                     if g.get("historico"):
                         st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
                                                       for h in g["historico"][-4:]))
+                    if st.session_state.get("role") == "admin":
+                        # exclusão REAL, só admin (nem o master tem): limpar simulações.
+                        # Caso real → status Cancelada, nunca excluir.
+                        cdel1, cdel2 = st.columns([4, 1])
+                        _confdel = cdel1.checkbox(
+                            f"🗑️ Confirmo EXCLUIR {g['id']} DEFINITIVAMENTE — sem rastro "
+                            "(só p/ simulação/teste; caso real usa 'Cancelada')",
+                            key=f"delck_{tk}_{g['id']}")
+                        if cdel2.button("Excluir", key=f"delbt_{tk}_{g['id']}",
+                                        disabled=not _confdel):
+                            if delete_garantia(g["id"]):
+                                st.session_state["gar_flash_del"] = \
+                                    f"🗑️ {g['id']} excluída definitivamente."
+                                st.rerun()
+                            else:
+                                st.error("Não consegui excluir no GitHub agora. Tente de novo.")
 
         # Cancelada = exclusão lógica: só master/admin/diretor enxergam.
         # Para Marcos/Pedro não há sub-aba Canceladas e 'Todas' as omite.

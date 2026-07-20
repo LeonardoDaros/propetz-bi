@@ -88,24 +88,45 @@
    "defeito": "Não liga",
    "defeito_outro": "",
    "defeito_obs": "cliente falou que a mauqina apos 5 m iunutos de uso parou de funcionar, eu um puta de um chatro, lalaia lalalia",
-   "pecas": [],
+   "pecas": [
+    {
+     "sku": "PGC-53003",
+     "nome": "PROX MOTOR",
+     "qtd": 1,
+     "custo": 19.9
+    },
+    {
+     "sku": "MP3-PC1X-100",
+     "nome": "Placa/Circuito MP3",
+     "qtd": 1,
+     "custo": 45.79
+    }
+   ],
    "custo_extra": 0,
-   "diagnostico_causa": "",
-   "diagnostico_obs": "",
-   "resultado": "",
-   "nf_saida": "",
-   "custo_total": 0,
+   "diagnostico_causa": "Defeito de fabricação",
+   "diagnostico_obs": "motor apresenta falha na hora de ligar na tomado",
+   "resultado": "Consertada",
+   "nf_saida": "1578",
+   "custo_total": 115.69,
    "id": "G-0002",
    "criado_em": "2026-07-20 12:01",
    "criado_por": "Jacson",
-   "status": "Aberta",
+   "status": "Em bancada",
    "historico": [
     {
      "em": "2026-07-20 12:01",
      "por": "Jacson",
      "acao": "Registro criado"
+    },
+    {
+     "em": "2026-07-20 12:17",
+     "por": "Jacson",
+     "acao": "Status → Em bancada"
     }
-   ]
+   ],
+   "frete_vinda": 25.0,
+   "frete_volta": 25.0,
+   "frete_obs": ""
   }
  ]
 }

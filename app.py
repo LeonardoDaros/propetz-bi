@@ -7,6 +7,7 @@ import yaml
 import os
 import hashlib
 import json
+import re
 import base64
 import threading
 import requests
@@ -572,6 +573,56 @@ def update_garantia(gid, updates, acao):
 
     _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
     return ok
+
+def anexar_documento_garantia(gid, arquivo):
+    """Salva um anexo (comprovante, foto, NF de gasto extra) no branch 'state'
+    em anexos/<gid>/... e registra os metadados no caso. Retorna (ok, msg)."""
+    try:
+        conteudo = arquivo.getvalue()
+    except Exception:
+        return False, "Não consegui ler o arquivo."
+    if len(conteudo) > 8 * 1024 * 1024:
+        return False, "Arquivo acima de 8 MB — reduza (foto menor ou PDF compactado)."
+    seguro = re.sub(r"[^A-Za-z0-9._-]", "_", arquivo.name)[:60] or "arquivo"
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    caminho = f"anexos/{gid}/{ts}_{seguro}"
+    tok = _gh_token()
+    if tok:
+        if not _gh_put_file(caminho, conteudo, f"Anexo {gid}: {seguro}", _GH_STATE_BRANCH, token=tok):
+            return False, "Falha ao enviar o anexo ao GitHub. Tente de novo."
+    else:
+        local = os.path.join(os.path.dirname(__file__), caminho.replace("/", os.sep))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "wb") as f:
+            f.write(conteudo)
+    meta = {"nome": seguro, "caminho": caminho, "em": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "por": st.session_state.get("user_name", ""), "bytes": len(conteudo)}
+
+    def apply(d):
+        gs = list(d.get("garantias", []))
+        for g in gs:
+            if g.get("id") == gid:
+                g.setdefault("anexos", []).append(meta)
+                g.setdefault("historico", []).append(
+                    {"em": meta["em"], "por": meta["por"], "acao": f"Anexo adicionado: {seguro}"})
+                break
+        return {"garantias": gs}
+
+    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+    return (True, f"Anexo '{seguro}' salvo.") if ok else (False, "Anexo enviado, mas falhou o registro no caso.")
+
+def baixar_anexo_garantia(caminho):
+    """Conteúdo (bytes) de um anexo — do GitHub (ou disco local sem token)."""
+    tok = _gh_token()
+    if tok:
+        conteudo, _ = _gh_get_file(caminho, _GH_STATE_BRANCH, token=tok)
+        return conteudo
+    local = os.path.join(os.path.dirname(__file__), caminho.replace("/", os.sep))
+    try:
+        with open(local, "rb") as f:
+            return f.read()
+    except Exception:
+        return None
 
 def _rotulo_outro(valor, detalhe):
     """'Outro' vira 'Outro (detalhe)' quando o usuário especificou."""
@@ -1585,7 +1636,16 @@ def page_garantias(products_df, df_clients):
         # Campos FORA de st.form de propósito: marcar "Outro" mostra o campo
         # de especificação NA HORA (form fechado não reage antes do submit).
         _NK = ("gn_canal", "gn_canal_outro", "gn_clidist", "gn_clitxt", "gn_prod",
-               "gn_dtcompra", "gn_dist_dt", "gn_dist_nf", "gn_def", "gn_def_outro", "gn_obs")
+               "gn_dtcompra", "gn_dist_dt", "gn_dist_nf",
+               "gn_cf_nome", "gn_cf_nf", "gn_cf_chave", "gn_def", "gn_def_outro", "gn_obs")
+
+        def _autofill_cliente():
+            # escolher o distribuidor preenche o campo Cliente sozinho — evita o
+            # funcionário digitar ali, por engano, o nome do cliente FINAL
+            _sel = st.session_state.get("gn_clidist")
+            if _sel:
+                st.session_state["gn_clitxt"] = _sel
+
         c1, c2 = st.columns(2)
         canal = c1.selectbox("Canal *", CANAIS_GARANTIA, index=None,
                              placeholder="De onde vem o cliente...", key="gn_canal")
@@ -1594,22 +1654,33 @@ def page_garantias(products_df, df_clients):
             canal_outro = c1.text_input("Qual canal? *", key="gn_canal_outro",
                                         placeholder="Ex.: marketplace, representante...")
         cliente_dist = c2.selectbox("Cliente da Distribuição (se for)", cli_dist, index=None,
-                                    placeholder="Buscar na base...", key="gn_clidist")
-        cliente_txt = st.text_input("Cliente (nome/razão — obrigatório se não achou acima)", key="gn_clitxt")
+                                    placeholder="Buscar na base...", key="gn_clidist",
+                                    on_change=_autofill_cliente)
+        cliente_txt = st.text_input("Cliente (nome/razão — preenche sozinho ao escolher o distribuidor)",
+                                    key="gn_clitxt")
         c3, c4 = st.columns([2, 1])
         produto = c3.selectbox("Produto *", prod_opts, index=None,
                                placeholder="Buscar por código ou nome...", key="gn_prod")
         data_compra = c4.date_input("Data da compra do reclamante (se souber)", value=None,
                                     format="DD/MM/YYYY", key="gn_dtcompra")
         dist_data_compra, dist_nf_compra = None, ""
+        cf_nome, cf_nf, cf_chave = "", "", ""
         if canal == "Distribuição":
-            st.markdown("**Rastreio da Distribuição** — a garantia se valida pela compra "
-                        "que o DISTRIBUIDOR fez na Propetz:")
+            st.markdown("**Rastreio da Distribuição** — compra do DISTRIBUIDOR na Propetz "
+                        "e venda dele ao cliente final (⚠️ sem NF da venda ao cliente, "
+                        "a garantia NÃO é aceita):")
             cd1, cd2 = st.columns(2)
             dist_data_compra = cd1.date_input("Data da compra do distribuidor", value=None,
                                               format="DD/MM/YYYY", key="gn_dist_dt")
             dist_nf_compra = cd2.text_input("NF da compra do distribuidor", key="gn_dist_nf",
                                             placeholder="Nota da venda Propetz → distribuidor...")
+            cf1, cf2 = st.columns(2)
+            cf_nome = cf1.text_input("Cliente do distribuidor (consumidor final) *", key="gn_cf_nome",
+                                     placeholder="Quem comprou do distribuidor e está reclamando...")
+            cf_nf = cf2.text_input("NF da venda ao cliente final *", key="gn_cf_nf",
+                                   placeholder="Nota distribuidor → cliente (obrigatória)...")
+            cf_chave = st.text_input("Chave de acesso da NF (44 dígitos, se tiver em mãos)",
+                                     key="gn_cf_chave", placeholder="Pode completar depois na Bancada...")
         c7, _ = st.columns([1, 1])
         defeito = c7.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
                                placeholder="Categoria do problema...", key="gn_def")
@@ -1627,6 +1698,11 @@ def page_garantias(products_df, df_clients):
                 faltas.append("qual canal (marcou 'Outro')")
             if defeito == "Outro" and not defeito_outro.strip():
                 faltas.append("qual defeito (marcou 'Outro')")
+            if canal == "Distribuição":
+                if not cf_nome.strip():
+                    faltas.append("o CLIENTE FINAL (quem comprou do distribuidor)")
+                if not cf_nf.strip():
+                    faltas.append("a NF da venda ao cliente final (sem nota, não aceitamos a garantia)")
             if faltas:
                 st.error("⚠️ Preencha: " + ", ".join(faltas) + ". Nada foi registrado.")
             else:
@@ -1640,6 +1716,8 @@ def page_garantias(products_df, df_clients):
                     "nf_entrada": "",   # idem
                     "dist_data_compra": dist_data_compra.strftime("%Y-%m-%d") if dist_data_compra else "",
                     "dist_nf_compra": dist_nf_compra.strip(),
+                    "cliente_final": cf_nome.strip(), "cliente_final_nf": cf_nf.strip(),
+                    "cliente_final_nf_chave": re.sub(r"\D", "", cf_chave or ""),
                     "defeito": defeito, "defeito_outro": defeito_outro.strip(),
                     "defeito_obs": defeito_obs.strip(),
                     "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
@@ -1704,13 +1782,50 @@ def page_garantias(products_df, df_clients):
                                 _ddc = datetime.strptime(_ddc, "%Y-%m-%d").strftime("%d/%m/%Y")
                             except Exception:
                                 pass
+                        _chv = g.get("cliente_final_nf_chave") or ""
+                        _chv = (_chv[:8] + "…" + _chv[-4:]) if len(_chv) > 14 else (_chv or "—")
                         _linha_meta += (f"  \n🏷️ **Distribuidor comprou em:** {_ddc or '—'} | "
-                                        f"**NF da compra do distribuidor:** {g.get('dist_nf_compra') or '—'}")
+                                        f"**NF compra distribuidor:** {g.get('dist_nf_compra') or '—'} | "
+                                        f"**Cliente final:** {g.get('cliente_final') or '—'} | "
+                                        f"**NF cliente final:** {g.get('cliente_final_nf') or '—'} | "
+                                        f"**Chave:** {_chv}")
                     st.markdown(_linha_meta)
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                                 f"— {g.get('defeito_obs') or 'sem obs.'}")
 
                     _fechada = g.get("status") in STATUS_FINALIZADOS
+
+                    # ---- ANEXOS (comprovantes, gastos extras, manutenções aproveitadas) ----
+                    _anexos = g.get("anexos", [])
+                    if _anexos or not _fechada or can_edit_garantia_fechada():
+                        st.markdown(f"**📎 Anexos ({len(_anexos)})** — comprovantes de gastos fora da "
+                                    "garantia, manutenções aproveitadas, fotos, NFs:")
+                    for ai, a in enumerate(_anexos):
+                        an1, an2, an3 = st.columns([4, 1, 2])
+                        an1.caption(f"• {a.get('nome','?')} — {a.get('em','')} por {a.get('por','')}")
+                        _bkey = f"anexo_bytes_{g['id']}_{ai}"
+                        if an2.button("📥", key=f"getax_{tk}_{g['id']}_{ai}", help="Preparar download"):
+                            _conteudo = baixar_anexo_garantia(a.get("caminho", ""))
+                            if _conteudo:
+                                st.session_state[_bkey] = _conteudo
+                            else:
+                                st.error("Não consegui baixar este anexo agora.")
+                        if st.session_state.get(_bkey):
+                            an3.download_button("💾 Salvar", st.session_state[_bkey],
+                                                file_name=a.get("nome", "anexo"),
+                                                key=f"dlax_{tk}_{g['id']}_{ai}")
+                    if not _fechada or can_edit_garantia_fechada():
+                        _novo_anexo = st.file_uploader("Adicionar anexo (PDF, foto... máx. 8 MB)",
+                                                       key=f"upax_{tk}_{g['id']}")
+                        if _novo_anexo is not None:
+                            if st.button(f"📎 Anexar '{_novo_anexo.name[:30]}'",
+                                         key=f"btnax_{tk}_{g['id']}", type="secondary"):
+                                _okx, _msgx = anexar_documento_garantia(g["id"], _novo_anexo)
+                                if _okx:
+                                    st.success(_msgx)
+                                    st.rerun()
+                                else:
+                                    st.error(_msgx)
                     if _fechada and not can_edit_garantia_fechada():
                         # Marcos/Pedro: finalizada = somente leitura
                         _fretes = f"vinda {fmt_brl_full(g.get('frete_vinda', 0) or 0)} / " \
@@ -1782,8 +1897,21 @@ def page_garantias(products_df, df_clients):
                             dist_nf = cdis2.text_input("NF da compra do distribuidor",
                                                        value=g.get("dist_nf_compra", ""),
                                                        key=f"dnf_{tk}_{g['id']}")
+                            ccf1, ccf2 = st.columns(2)
+                            cf_nome_b = ccf1.text_input("Cliente final (comprou do distribuidor)",
+                                                        value=g.get("cliente_final", ""),
+                                                        key=f"cfn_{tk}_{g['id']}")
+                            cf_nf_b = ccf2.text_input("NF da venda ao cliente final",
+                                                      value=g.get("cliente_final_nf", ""),
+                                                      key=f"cff_{tk}_{g['id']}")
+                            cf_chave_b = st.text_input("Chave de acesso da NF (44 dígitos)",
+                                                       value=g.get("cliente_final_nf_chave", ""),
+                                                       key=f"cfc_{tk}_{g['id']}")
                         else:
                             dist_data, dist_nf = None, g.get("dist_nf_compra", "")
+                            cf_nome_b = g.get("cliente_final", "")
+                            cf_nf_b = g.get("cliente_final_nf", "")
+                            cf_chave_b = g.get("cliente_final_nf_chave", "")
                         def _pdate(s):
                             try:
                                 return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
@@ -1875,6 +2003,9 @@ def page_garantias(products_df, df_clients):
                                    "dist_data_compra": dist_data.strftime("%Y-%m-%d") if dist_data else
                                                        (g.get("dist_data_compra", "") if g.get("canal") != "Distribuição" else ""),
                                    "dist_nf_compra": (dist_nf or "").strip(),
+                                   "cliente_final": (cf_nome_b or "").strip(),
+                                   "cliente_final_nf": (cf_nf_b or "").strip(),
+                                   "cliente_final_nf_chave": re.sub(r"\D", "", cf_chave_b or ""),
                                    "data_chegada": data_chegada.strftime("%Y-%m-%d") if data_chegada else "",
                                    "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
@@ -1999,6 +2130,10 @@ def page_garantias(products_df, df_clients):
                              "Data compra": g.get("data_compra", ""),
                              "Compra distribuidor": g.get("dist_data_compra", ""),
                              "NF compra distribuidor": g.get("dist_nf_compra", ""),
+                             "Cliente final": g.get("cliente_final", ""),
+                             "NF cliente final": g.get("cliente_final_nf", ""),
+                             "Chave NF cliente final": g.get("cliente_final_nf_chave", ""),
+                             "Anexos": "; ".join(a.get("nome", "") for a in g.get("anexos", [])),
                              "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
                              "Defeito": _rotulo_outro(g.get("defeito"), g.get("defeito_outro")),
                              "Relato": g.get("defeito_obs"),

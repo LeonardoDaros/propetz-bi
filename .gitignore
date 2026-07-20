@@ -7,5 +7,6 @@ Qtd_Comprada_Por_Cliente_RECONSTRUIDA.xlsx
 *.backup_*
 *.gif
 Tutorial*.docx
+anexos/
 DEPLOY.md
 .sessions/

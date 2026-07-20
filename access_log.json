@@ -1535,5 +1535,14 @@
   "timestamp": "2026-07-20 11:10:03",
   "date": "2026-07-20",
   "time": "11:10:03"
+ },
+ {
+  "user": "marcos",
+  "name": "Marcos",
+  "action": "page_view",
+  "page": "🔧 Garantias",
+  "timestamp": "2026-07-20 11:10:03",
+  "date": "2026-07-20",
+  "time": "11:10:03"
  }
 ]

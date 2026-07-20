@@ -41,7 +41,7 @@
    "id": "G-0001",
    "criado_em": "2026-07-20 11:36",
    "criado_por": "Marcos",
-   "status": "Concluída",
+   "status": "Aberta",
    "historico": [
     {
      "em": "2026-07-20 11:36",
@@ -67,6 +67,11 @@
      "em": "2026-07-20 11:38",
      "por": "Marcos",
      "acao": "Status → Concluída"
+    },
+    {
+     "em": "2026-07-20 11:43",
+     "por": "Jacson",
+     "acao": "CORREÇÃO PÓS-FECHAMENTO (era Concluída): Status → Aberta"
     }
    ],
    "concluido_em": "2026-07-20 11:38"

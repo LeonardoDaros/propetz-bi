@@ -24,3 +24,13 @@ users:
     password: 02f51ef20e92606dbbb74251c6711cdc4a6c193a58ebed926c3c456780bcdbf3
     role: vendedor
     vendor_filter: Yasmin Propetz Distribuição
+  marcos:
+    name: Marcos
+    password: 2558a9f6df0969f99a158c25e8a344023d9ce6883ddc4076d828306adacd0671
+    role: garantia
+    vendor_filter: null
+  pedro:
+    name: Pedro
+    password: 186c28eb4e6e7ebfabc96fee3b7d638ae5c5bff9761eba2bf939aa8fb1f9d9c5
+    role: garantia
+    vendor_filter: null

@@ -24,6 +24,7 @@ O disco do Streamlit Cloud é efêmero — era a causa do app "cair" todo dia (p
 - Requer `GITHUB_TOKEN` (escopo repo) nos secrets do Streamlit Cloud — instruções no `COMO-USAR.md`. Sem token, degrada graciosamente para só-local (sem persistência entre restarts).
 - `_gh_token()` limpa aspas/espaços do valor (erro de colagem comum); escritas de estado são serializadas por `_GH_WRITE_LOCK` (evita corrida read-SHA/PUT). Página Admin tem botão "Testar conexão com o GitHub" (`_gh_diagnose()`) que reporta passo a passo onde a persistência quebra (token ausente/inválido/sem acesso ao repo/falha de escrita). Banner vermelho no topo alerta admin/diretor quando não há token.
 - `deploy.bat` / `setup.bat` — fluxo de deploy em 1 clique (commit + push → Streamlit Cloud atualiza em ~1 min).
+- **Para o Claude: NUNCA usar `git worktree` neste repo** (o OneDrive trava `.git/worktrees/*` e o deploy do Leonardo passa a perguntar "Deletion of directory failed. Should I try again?" — aconteceu 2x, jul/2026). Para escrever no branch `state` sem token: `git clone --depth 1 --branch state <remote> %TEMP%\pasta` → editar → push de lá → apagar a pasta. Se o prompt aparecer no deploy: responder `n` e remover `.git\worktrees\<nome>` com `cmd /c rmdir /s /q`.
 - `AUDIT_REPORT.txt` — auditoria completa de 2026-03-27 (status: PASS).
 
 ## Páginas do app

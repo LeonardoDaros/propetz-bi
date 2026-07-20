@@ -512,6 +512,8 @@ DEFEITOS_GARANTIA = ["Não liga", "Motor", "Bateria / não carrega", "Carregador
                      "Esquenta demais", "Display / luz", "Dano de transporte", "Outro"]
 CAUSAS_GARANTIA = ["Defeito de fabricação", "Mau uso do cliente", "Desgaste natural",
                    "Dano de transporte", "Instalação/voltagem errada", "Sem defeito constatado", "Outra"]
+PRIORIDADES_GARANTIA = ["Normal", "Alta", "Urgente"]
+_PRIO_ICONE = {"Alta": "🟠 ", "Urgente": "🔴 "}
 RESULTADOS_GARANTIA = ["Consertada", "Trocada por produto novo", "Reembolso", "Recusada (fora de garantia)",
                        "Devolvida sem conserto"]
 
@@ -588,6 +590,13 @@ def _rotulo_outro(valor, detalhe):
     if valor == "Outro" and str(detalhe or "").strip():
         return f"Outro ({str(detalhe).strip()})"
     return valor or ""
+
+def _link_rastreio(cod):
+    """Código de rastreio como link clicável para o rastreamento dos Correios."""
+    cod = str(cod or "").strip()
+    if not cod:
+        return "—"
+    return f"[{cod}](https://rastreamento.correios.com.br/app/index.php?objeto={cod})"
 
 def _garantia_custo_total(g, custo_map):
     """Custo real do caso: peças + fretes (vinda e volta) + extra + produto
@@ -1624,7 +1633,8 @@ def page_garantias(products_df, df_clients):
         # Campos FORA de st.form de propósito: marcar "Outro" mostra o campo
         # de especificação NA HORA (form fechado não reage antes do submit).
         _NK = ("gn_canal", "gn_canal_outro", "gn_clidist", "gn_clitxt", "gn_prod",
-               "gn_dtcompra", "gn_cf_nome", "gn_cf_nf", "gn_def", "gn_def_outro", "gn_obs")
+               "gn_dtcompra", "gn_rastreio", "gn_cf_nome", "gn_cf_nf", "gn_cf_chave",
+               "gn_def", "gn_def_outro", "gn_obs", "gn_prio")
 
         def _autofill_cliente():
             # escolher o distribuidor preenche o campo Cliente sozinho — evita o
@@ -1645,12 +1655,23 @@ def page_garantias(products_df, df_clients):
                                     on_change=_autofill_cliente)
         cliente_txt = st.text_input("Cliente (nome/razão — preenche sozinho ao escolher o distribuidor)",
                                     key="gn_clitxt")
+        _cli_chk = cliente_txt.strip().lower()
+        if len(_cli_chk) >= 3:
+            _reinc = [x for x in garantias if _cli_chk in str(x.get("cliente", "")).lower()
+                      or _cli_chk in str(x.get("cliente_final", "")).lower()]
+            if _reinc:
+                st.warning(f"⚠️ **Cliente reincidente:** já existem {len(_reinc)} garantia(s) dele "
+                           f"({', '.join(x['id'] for x in _reinc[-5:])}). "
+                           "Avalie marcar a PRIORIDADE como Alta/Urgente ali embaixo.")
         c3, c4 = st.columns([2, 1])
         produto = c3.selectbox("Produto *", prod_opts, index=None,
                                placeholder="Buscar por código ou nome...", key="gn_prod")
         data_compra = c4.date_input("Data da compra do reclamante (se souber)", value=None,
                                     format="DD/MM/YYYY", key="gn_dtcompra")
-        cf_nome, cf_nf = "", ""
+        rastreio_entrada = st.text_input("📬 Código de rastreamento da VINDA (sai junto com o protocolo)",
+                                         key="gn_rastreio",
+                                         placeholder="Ex.: AA123456789BR — na Bancada vira link p/ os Correios...")
+        cf_nome, cf_nf, cf_chave = "", "", ""
         if canal == "Distribuição":
             st.markdown("**Venda ao cliente final** — ⚠️ sem NF da venda do distribuidor "
                         "ao cliente, a garantia NÃO é aceita:")
@@ -1659,6 +1680,8 @@ def page_garantias(products_df, df_clients):
                                      placeholder="Quem comprou do distribuidor e está reclamando...")
             cf_nf = cf2.text_input("NF da venda ao cliente final *", key="gn_cf_nf",
                                    placeholder="Nota distribuidor → cliente (obrigatória)...")
+            cf_chave = st.text_input("Chave de acesso da NF (44 dígitos, se tiver em mãos)",
+                                     key="gn_cf_chave", placeholder="Pode completar depois na Bancada...")
         c7, _ = st.columns([1, 1])
         defeito = c7.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
                                placeholder="Categoria do problema...", key="gn_def")
@@ -1666,8 +1689,12 @@ def page_garantias(products_df, df_clients):
         if defeito == "Outro":
             defeito_outro = c7.text_input("Qual defeito? *", key="gn_def_outro",
                                           placeholder="Descreva em poucas palavras...")
-        defeito_obs = st.text_area("Relato do cliente / observações", height=80, key="gn_obs",
-                                   placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
+        co1, co2 = st.columns([3, 1])
+        defeito_obs = co1.text_area("Relato do cliente / observações", height=80, key="gn_obs",
+                                    placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
+        prioridade = co2.selectbox("Prioridade", PRIORIDADES_GARANTIA, index=0, key="gn_prio",
+                                   help="🔴 Urgente / 🟠 Alta furam a fila da bancada — use p/ cliente "
+                                        "reincidente ou caso já desgastado.")
         if st.button("📥 Registrar entrada", type="primary", key="gn_enviar"):
             # o campo de TEXTO manda: é o que o funcionário está vendo na tela
             # (o autofill já o preenche ao escolher o distribuidor; se ele editar
@@ -1695,9 +1722,11 @@ def page_garantias(products_df, df_clients):
                     "empresa_nf": "",   # definida na Bancada, quando o produto chega
                     "data_compra": data_compra.strftime("%Y-%m-%d") if data_compra else "",
                     "nf_entrada": "",   # idem
+                    "rastreio_entrada": rastreio_entrada.strip(),
                     "cliente_final": cf_nome.strip(), "cliente_final_nf": cf_nf.strip(),
+                    "cliente_final_nf_chave": "".join(ch for ch in (cf_chave or "") if ch.isdigit()),
                     "defeito": defeito, "defeito_outro": defeito_outro.strip(),
-                    "defeito_obs": defeito_obs.strip(),
+                    "defeito_obs": defeito_obs.strip(), "prioridade": prioridade,
                     "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
                     "resultado": "", "nf_saida": "", "custo_total": 0,
                 })
@@ -1715,7 +1744,10 @@ def page_garantias(products_df, df_clients):
         _fld = st.session_state.pop("gar_flash_del", None)
         if _fld:
             st.success(_fld)
-        busca = st.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
+        cb1, cb2, cb3 = st.columns([2, 1, 1])
+        busca = cb1.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
+        dt_de = cb2.date_input("Registradas DE", value=None, format="DD/MM/YYYY", key="gar_dtde")
+        dt_ate = cb3.date_input("ATÉ", value=None, format="DD/MM/YYYY", key="gar_dtate")
 
         def _filtra(status_lista):
             out = [g for g in garantias if g.get("status") in status_lista]
@@ -1724,7 +1756,18 @@ def page_garantias(products_df, df_clients):
                 out = [g for g in out if any(s in str(g.get(k, "")).lower() for k in
                        ("id", "cliente", "produto_nome", "produto_sku", "empresa_nf",
                         "nf_entrada", "nf_saida"))]
-            out.sort(key=lambda g: g.get("criado_em", ""))
+            if dt_de or dt_ate:
+                def _dreg(g):
+                    try:
+                        return datetime.strptime(str(g.get("criado_em", ""))[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        return None
+                out = [g for g in out if (_d := _dreg(g)) is not None
+                       and (not dt_de or _d >= dt_de) and (not dt_ate or _d <= dt_ate)]
+            # urgentes primeiro, depois altas; empate = mais antiga primeiro
+            _rank = {"Urgente": 0, "Alta": 1}
+            out.sort(key=lambda g: (_rank.get(g.get("prioridade", "Normal"), 2),
+                                    g.get("criado_em", "")))
             return out
 
         def _render_fila(lista, tk):
@@ -1743,7 +1786,8 @@ def page_garantias(products_df, df_clients):
                 icone = {"Aguardando chegada": "📬", "Em bancada": "🔧", "Aguardando peça": "📦",
                          "Confirmado — aguardando R$ frete": "🚚",
                          "Concluída": "✅", "Cancelada": "🚫"}.get(g.get("status"), "•")
-                with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
+                _pri = _PRIO_ICONE.get(g.get("prioridade", ""), "")
+                with st.expander(f"{_pri}{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
                                  f"[{g.get('status')}]{dias}"):
                     _dtc = g.get("data_compra") or ""
                     if _dtc:
@@ -1752,8 +1796,10 @@ def page_garantias(products_df, df_clients):
                         except Exception:
                             pass
                     _linha_meta = (f"**Canal:** {_rotulo_outro(g.get('canal',''), g.get('canal_outro'))} | "
+                                   f"**Prioridade:** {_pri}{g.get('prioridade') or 'Normal'} | "
                                    f"**Empresa NF:** {g.get('empresa_nf') or '—'} | "
                                    f"**NF entrada:** {g.get('nf_entrada') or '—'} | "
+                                   f"**Rastreio entrada:** {_link_rastreio(g.get('rastreio_entrada'))} | "
                                    f"**Compra:** {_dtc or '—'} | **Registro:** {g.get('criado_em','')} "
                                    f"por {g.get('criado_por','')}")
                     if g.get("canal") == "Distribuição":
@@ -1845,14 +1891,20 @@ def page_garantias(products_df, df_clients):
                                                     value=_pdate(g.get("data_envio")),
                                                     format="DD/MM/YYYY", key=f"de_{tk}_{g['id']}")
                         cr1, cr2 = st.columns(2)
-                        rastreio_entrada = cr1.text_input("📬 Rastreamento de ENTRADA (vinda do produto)",
-                                                          value=g.get("rastreio_entrada", ""),
-                                                          key=f"rge_{tk}_{g['id']}",
-                                                          placeholder="Código dos Correios/transportadora...")
+                        prioridade_b = cr1.selectbox("Prioridade", PRIORIDADES_GARANTIA,
+                                                     index=PRIORIDADES_GARANTIA.index(g["prioridade"])
+                                                     if g.get("prioridade") in PRIORIDADES_GARANTIA else 0,
+                                                     key=f"pr_{tk}_{g['id']}",
+                                                     help="🔴 Urgente / 🟠 Alta furam a fila.")
                         rastreio_saida = cr2.text_input("🚚 Rastreamento de SAÍDA (volta ao cliente)",
                                                         value=g.get("rastreio_saida", ""),
                                                         key=f"rgs_{tk}_{g['id']}",
                                                         placeholder="Código do envio de volta...")
+                        cf_chave_b = g.get("cliente_final_nf_chave", "")
+                        if g.get("canal") == "Distribuição":
+                            cf_chave_b = st.text_input("Chave de acesso da NF do cliente final (44 dígitos)",
+                                                       value=g.get("cliente_final_nf_chave", ""),
+                                                       key=f"cfc_{tk}_{g['id']}")
                         st.markdown("**Peças trocadas / serviços** (até 3 — peça puxa custo da Base Mãe; "
                                     "serviço usa o R$ digitado, deixe 0 se feito em casa):")
                         _serv_map = {"🛠️ SERVIÇO — Afiação": ("SERV-AFIACAO", "Afiação (serviço)"),
@@ -1934,8 +1986,10 @@ def page_garantias(products_df, df_clients):
                                    "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
                                    "resultado": resultado or "", "nf_saida": nf_saida.strip(),
                                    "empresa_nf": empresa_nf or "", "nf_entrada": nf_entrada.strip(),
-                                   "rastreio_entrada": rastreio_entrada.strip(),
                                    "rastreio_saida": rastreio_saida.strip(),
+                                   "prioridade": prioridade_b,
+                                   "cliente_final_nf_chave": "".join(ch for ch in (cf_chave_b or "")
+                                                                     if ch.isdigit()),
                                    "data_chegada": data_chegada.strftime("%Y-%m-%d") if data_chegada else "",
                                    "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
@@ -1989,14 +2043,21 @@ def page_garantias(products_df, df_clients):
         else:
             _sub_defs += [("📚 Todas", [s for s in STATUS_GARANTIA if s != "Cancelada"], "td")]
         _listas = {tk: _filtra(sts) for _, sts, tk in _sub_defs}
-        # rótulos FIXOS (sem contadores): rótulo que muda faz o st.tabs voltar
-        # para a primeira aba a cada save/busca — contagem vai dentro da aba
-        _subtabs = st.tabs([rot for rot, _, tk in _sub_defs])
-        for (_rot, _sts, tk), _stab in zip(_sub_defs, _subtabs):
-            with _stab:
-                if _listas[tk]:
-                    st.caption(f"{len(_listas[tk])} garantia(s) nesta fila")
-                _render_fila(_listas[tk], tk)
+        _rotmap = {tk: f"{rot} ({len(_listas[tk])})" for rot, _, tk in _sub_defs}
+        _opts = [tk for _, _, tk in _sub_defs]
+        # seletor com key em vez de st.tabs: a CONTAGEM no rótulo muda a cada
+        # save, e st.tabs com rótulo dinâmico voltaria pra 1ª aba — widget com
+        # estado preserva a fila selecionada (e renderiza SÓ ela: página leve)
+        if hasattr(st, "segmented_control"):
+            tk_sel = st.segmented_control("Fila", _opts, format_func=lambda t: _rotmap[t],
+                                          default="atv", key="gar_subtab",
+                                          label_visibility="collapsed")
+        else:
+            tk_sel = st.radio("Fila", _opts, format_func=lambda t: _rotmap[t],
+                              horizontal=True, key="gar_subtab",
+                              label_visibility="collapsed")
+        tk_sel = tk_sel if tk_sel in _listas else "atv"  # desmarcado/estado velho → padrão
+        _render_fila(_listas[tk_sel], tk_sel)
 
     # ---------------- PAINEL ----------------
     with tab_painel:
@@ -2079,6 +2140,7 @@ def page_garantias(products_df, df_clients):
             flat = []
             for g in garantias:
                 flat.append({"ID": g["id"], "Status": g.get("status"),
+                             "Prioridade": g.get("prioridade", "Normal"),
                              "Canal": _rotulo_outro(g.get("canal"), g.get("canal_outro")),
                              "Cliente": g.get("cliente"), "SKU": g.get("produto_sku"),
                              "Produto": g.get("produto_nome"),
@@ -2086,6 +2148,7 @@ def page_garantias(products_df, df_clients):
                              "Data compra": g.get("data_compra", ""),
                              "Cliente final": g.get("cliente_final", ""),
                              "NF cliente final": g.get("cliente_final_nf", ""),
+                             "Chave NF cliente final": g.get("cliente_final_nf_chave", ""),
                              "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
                              "Rastreio entrada": g.get("rastreio_entrada", ""),
                              "Rastreio saída": g.get("rastreio_saida", ""),

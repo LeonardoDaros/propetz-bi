@@ -41,7 +41,7 @@
    "id": "G-0001",
    "criado_em": "2026-07-20 11:36",
    "criado_por": "Marcos",
-   "status": "Aberta",
+   "status": "Em bancada",
    "historico": [
     {
      "em": "2026-07-20 11:36",
@@ -57,6 +57,11 @@
      "em": "2026-07-20 11:37",
      "por": "Marcos",
      "acao": "Status → Aberta"
+    },
+    {
+     "em": "2026-07-20 11:38",
+     "por": "Marcos",
+     "acao": "Status → Em bancada"
     }
    ]
   }

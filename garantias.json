@@ -12,13 +12,32 @@
    "defeito": "Carcaça quebrada",
    "defeito_outro": "",
    "defeito_obs": "lalala lalala lalala",
-   "pecas": [],
-   "custo_extra": 0,
-   "diagnostico_causa": "",
+   "pecas": [
+    {
+     "sku": "E1RPGD-200",
+     "nome": "RASQUEADEIRA PREMIUM RETA GRANDE PINOS FIRMES BLACK PROPETZ",
+     "qtd": 4,
+     "custo": 6.89
+    },
+    {
+     "sku": "L2APROXS-100",
+     "nome": "LAMINA DE TOSA ADVANCE PRO6 REGULAVEL SLIM n.9 a n.30 PROPETZ",
+     "qtd": 1,
+     "custo": 27.4
+    },
+    {
+     "sku": "L2APROXS-100",
+     "nome": "LAMINA DE TOSA ADVANCE PRO6 REGULAVEL SLIM n.9 a n.30 PROPETZ",
+     "qtd": 1,
+     "custo": 27.4
+    }
+   ],
+   "custo_extra": 35.0,
+   "diagnostico_causa": "Outra",
    "diagnostico_obs": "",
-   "resultado": "",
+   "resultado": "Consertada",
    "nf_saida": "",
-   "custo_total": 0,
+   "custo_total": 117.36,
    "id": "G-0001",
    "criado_em": "2026-07-20 11:36",
    "criado_por": "Marcos",
@@ -28,6 +47,11 @@
      "em": "2026-07-20 11:36",
      "por": "Marcos",
      "acao": "Registro criado"
+    },
+    {
+     "em": "2026-07-20 11:37",
+     "por": "Marcos",
+     "acao": "Status → Aberta"
     }
    ]
   }

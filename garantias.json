@@ -75,6 +75,37 @@
     }
    ],
    "concluido_em": "2026-07-20 11:38"
+  },
+  {
+   "canal": "Distribuição",
+   "canal_outro": "",
+   "cliente": "jaco pintulindu",
+   "produto_sku": "MP5-510P-100",
+   "produto_nome": "PRO 7",
+   "empresa_nf": "TradeCorp",
+   "data_compra": "2025-08-05",
+   "nf_entrada": "1578",
+   "defeito": "Não liga",
+   "defeito_outro": "",
+   "defeito_obs": "cliente falou que a mauqina apos 5 m iunutos de uso parou de funcionar, eu um puta de um chatro, lalaia lalalia",
+   "pecas": [],
+   "custo_extra": 0,
+   "diagnostico_causa": "",
+   "diagnostico_obs": "",
+   "resultado": "",
+   "nf_saida": "",
+   "custo_total": 0,
+   "id": "G-0002",
+   "criado_em": "2026-07-20 12:01",
+   "criado_por": "Jacson",
+   "status": "Aberta",
+   "historico": [
+    {
+     "em": "2026-07-20 12:01",
+     "por": "Jacson",
+     "acao": "Registro criado"
+    }
+   ]
   }
  ]
 }

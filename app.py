@@ -498,10 +498,14 @@ def _fmt_motivo(r):
 # ============================================================
 GARANTIAS_FILE = os.path.join(os.path.dirname(__file__), "garantias.json")
 
-STATUS_GARANTIA = ["Aberta", "Em bancada", "Aguardando peça", "Concluída", "Devolvida ao cliente", "Cancelada"]
-STATUS_ATIVOS = ["Aberta", "Em bancada", "Aguardando peça"]
-STATUS_FINALIZADOS = ["Concluída", "Devolvida ao cliente", "Cancelada"]
-CANAIS_GARANTIA = ["Distribuição", "Varejo", "Feira", "Site", "Outro"]
+STATUS_GARANTIA = ["Aguardando chegada", "Em bancada", "Aguardando peça",
+                   "Confirmado — aguardando R$ frete", "Concluída", "Cancelada"]
+STATUS_ATIVOS = ["Aguardando chegada", "Em bancada", "Aguardando peça",
+                 "Confirmado — aguardando R$ frete"]
+STATUS_FINALIZADOS = ["Concluída", "Cancelada"]
+# nomes antigos de registros já gravados -> nomes novos (migração transparente)
+_STATUS_LEGADO = {"Aberta": "Aguardando chegada", "Devolvida ao cliente": "Concluída"}
+CANAIS_GARANTIA = ["Distribuição", "Varejo", "Feira", "Outro"]
 EMPRESAS_NF = ["Matriz", "Filial", "Filial Foz", "TradeCorp"]
 DEFEITOS_GARANTIA = ["Não liga", "Motor", "Bateria / não carrega", "Carregador / fonte", "Lâmina / corte",
                      "Botão / interruptor", "Carcaça quebrada", "Ruído / vibração", "Esquenta demais",
@@ -523,9 +527,13 @@ def can_edit_garantia_fechada():
 def load_garantias():
     data = _read_state_json("garantias.json", GARANTIAS_FILE, {"garantias": []})
     try:
-        return data.get("garantias", [])
+        gs = data.get("garantias", [])
     except Exception:
         return []
+    for g in gs:  # migração transparente de status antigos
+        if g.get("status") in _STATUS_LEGADO:
+            g["status"] = _STATUS_LEGADO[g["status"]]
+    return gs
 
 def add_garantia(reg):
     """Cria um registro de garantia (id sequencial G-0001...) de forma atômica.
@@ -539,7 +547,7 @@ def add_garantia(reg):
         seq = 1 + max([int(g["id"].split("-")[1]) for g in gs if str(g.get("id", "")).startswith("G-")] or [0])
         gid = f"G-{seq:04d}"
         novo = dict(reg)
-        novo.update({"id": gid, "criado_em": agora, "criado_por": quem, "status": "Aberta",
+        novo.update({"id": gid, "criado_em": agora, "criado_por": quem, "status": "Aguardando chegada",
                      "historico": [{"em": agora, "por": quem, "acao": "Registro criado"}]})
         gs.append(novo)
         out["id"] = gid
@@ -1666,8 +1674,9 @@ def page_garantias(products_df, df_clients):
                     dias = f" | {(datetime.now() - d0).days}d na casa"
                 except Exception:
                     pass
-                icone = {"Aberta": "🔴", "Em bancada": "🔧", "Aguardando peça": "📦",
-                         "Concluída": "✅", "Devolvida ao cliente": "🏁", "Cancelada": "🚫"}.get(g.get("status"), "•")
+                icone = {"Aguardando chegada": "📬", "Em bancada": "🔧", "Aguardando peça": "📦",
+                         "Confirmado — aguardando R$ frete": "🚚",
+                         "Concluída": "✅", "Cancelada": "🚫"}.get(g.get("status"), "•")
                 with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
                                  f"[{g.get('status')}]{dias}"):
                     _dtc = g.get("data_compra") or ""
@@ -1691,10 +1700,17 @@ def page_garantias(products_df, df_clients):
                                   f"volta {fmt_brl_full(g.get('frete_volta', 0) or 0)}"
                         if g.get("frete_obs"):
                             _fretes += f" ({g['frete_obs']})"
+                        def _fdt(s):
+                            try:
+                                return datetime.strptime(str(s)[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+                            except Exception:
+                                return "—"
                         st.markdown(f"**Causa:** {g.get('diagnostico_causa') or '—'} | "
                                     f"**Serviço:** {g.get('diagnostico_obs') or '—'} | "
                                     f"**Resultado:** {g.get('resultado') or '—'} | "
                                     f"**NF saída:** {g.get('nf_saida') or '—'} | "
+                                    f"**Chegada:** {_fdt(g.get('data_chegada'))} | "
+                                    f"**Envio:** {_fdt(g.get('data_envio'))} | "
                                     f"**Fretes:** {_fretes} | "
                                     f"**Custo do caso:** {fmt_brl_full(g.get('custo_total', 0) or 0)}")
                         if g.get("pecas"):
@@ -1726,24 +1742,54 @@ def page_garantias(products_df, df_clients):
                         diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)",
                                                 value=g.get("diagnostico_obs", ""),
                                                 height=70, key=f"do_{tk}_{g['id']}")
-                        st.markdown("**Peças trocadas** (até 3 — custo puxa da Base Mãe automaticamente):")
+                        def _pdate(s):
+                            try:
+                                return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+                            except Exception:
+                                return None
+                        cd1, cd2 = st.columns(2)
+                        data_chegada = cd1.date_input("📬 Data de CHEGADA na empresa",
+                                                      value=_pdate(g.get("data_chegada")),
+                                                      format="DD/MM/YYYY", key=f"dc_{tk}_{g['id']}")
+                        data_envio = cd2.date_input("🚚 Data de ENVIO (volta ao cliente)",
+                                                    value=_pdate(g.get("data_envio")),
+                                                    format="DD/MM/YYYY", key=f"de_{tk}_{g['id']}")
+                        st.markdown("**Peças trocadas / serviços** (até 3 — peça puxa custo da Base Mãe; "
+                                    "serviço usa o R$ digitado, deixe 0 se feito em casa):")
+                        _serv_map = {"🛠️ SERVIÇO — Afiação": ("SERV-AFIACAO", "Afiação (serviço)"),
+                                     "🛠️ SERVIÇO — Mão de obra": ("SERV-MAOOBRA", "Mão de obra (serviço)")}
+                        _serv_por_sku = {v[0]: k for k, v in _serv_map.items()}
+                        slot_opts = list(_serv_map.keys()) + prod_opts
                         pecas_atuais = g.get("pecas", [])
                         pecas_novas = []
                         for slot in range(3):
-                            pc1, pc2 = st.columns([3, 1])
+                            pc1, pc2, pc3 = st.columns([3, 1, 1])
                             atual = pecas_atuais[slot] if slot < len(pecas_atuais) else None
                             atual_opt = None
+                            _custo_ini = 0.0
                             if atual:
-                                # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
                                 _sku_alvo = str(atual.get("sku", "")).strip()
-                                atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
-                            psel = pc1.selectbox(f"Peça {slot+1}", prod_opts,
-                                                 index=prod_opts.index(atual_opt) if atual_opt else None,
+                                if _sku_alvo in _serv_por_sku:
+                                    atual_opt = _serv_por_sku[_sku_alvo]
+                                    _custo_ini = float(atual.get("custo", 0) or 0)
+                                else:
+                                    # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
+                                    atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
+                            psel = pc1.selectbox(f"Peça/serviço {slot+1}", slot_opts,
+                                                 index=slot_opts.index(atual_opt) if atual_opt else None,
                                                  placeholder="—", key=f"p{slot}_{tk}_{g['id']}")
                             pqtd = pc2.number_input("Qtd", 1, 99,
                                                     value=int(atual.get("qtd", 1)) if atual else 1,
                                                     key=f"q{slot}_{tk}_{g['id']}")
-                            if psel:
+                            pcusto = pc3.number_input("R$ (serviço)", 0.0, 99999.0, value=_custo_ini,
+                                                      key=f"pc{slot}_{tk}_{g['id']}",
+                                                      help="Só vale para Afiação/Mão de obra. 0 = feito em casa. "
+                                                           "Peça de catálogo usa o custo da Base Mãe.")
+                            if psel in _serv_map:
+                                _ssku, _snome = _serv_map[psel]
+                                pecas_novas.append({"sku": _ssku, "nome": _snome,
+                                                    "qtd": int(pqtd), "custo": float(pcusto)})
+                            elif psel:
                                 psku = _sku_de(psel)
                                 pecas_novas.append({"sku": psku,
                                                     "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
@@ -1757,10 +1803,10 @@ def page_garantias(products_df, df_clients):
                         nf_saida = c4.text_input("NF de saída", value=g.get("nf_saida", ""),
                                                  key=f"nf_{tk}_{g['id']}")
                         c5, c6 = st.columns(2)
-                        frete_vinda = c5.number_input("Frete VINDA R$ *", 0.0, 99999.0,
+                        frete_vinda = c5.number_input("Frete VINDA R$ (exigido só p/ Concluir)", 0.0, 99999.0,
                                                       value=float(g.get("frete_vinda", 0) or 0),
                                                       key=f"fv_{tk}_{g['id']}")
-                        frete_volta = c6.number_input("Frete VOLTA R$ *", 0.0, 99999.0,
+                        frete_volta = c6.number_input("Frete VOLTA R$ (exigido só p/ Concluir)", 0.0, 99999.0,
                                                       value=float(g.get("frete_volta", 0) or 0),
                                                       key=f"fb_{tk}_{g['id']}")
                         frete_obs = st.text_input("Sem frete? Explique (retirada pessoal, cliente pagou...)",
@@ -1768,22 +1814,29 @@ def page_garantias(products_df, df_clients):
                         salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
                     if salvar:
                         problemas = []
-                        if novo_status in ("Concluída", "Devolvida ao cliente"):
+                        if novo_status == "Confirmado — aguardando R$ frete" and (not causa or not resultado):
+                            problemas.append("CAUSA e RESULTADO (o serviço precisa estar definido "
+                                             "para confirmar o envio)")
+                        if novo_status == "Concluída":
                             if not causa or not resultado:
                                 problemas.append("CAUSA e RESULTADO")
                             if (frete_vinda <= 0 or frete_volta <= 0) and not frete_obs.strip():
                                 problemas.append("os FRETES de vinda e volta (se não houve frete, "
                                                  "explique no campo 'Sem frete?')")
                         if problemas:
-                            st.error("⚠️ Para concluir, informe: " + " e ".join(problemas) + ". Nada foi salvo.")
+                            st.error("⚠️ Para esse status, informe: " + " e ".join(problemas) + ". Nada foi salvo.")
                         else:
                             upd = {"status": novo_status, "diagnostico_causa": causa or "",
                                    "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
                                    "resultado": resultado or "", "nf_saida": nf_saida.strip(),
+                                   "data_chegada": data_chegada.strftime("%Y-%m-%d") if data_chegada else "",
+                                   "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
                                    "frete_obs": frete_obs.strip()}
                             upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
-                            if novo_status in ("Concluída", "Devolvida ao cliente") and not g.get("concluido_em"):
+                            # trabalho termina no Confirmado (a Concluída pode vir semanas depois, só pelo frete)
+                            if novo_status in ("Confirmado — aguardando R$ frete", "Concluída") \
+                                    and not g.get("concluido_em"):
                                 upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                             _acao = f"Status → {novo_status}"
                             if _fechada:
@@ -1799,11 +1852,11 @@ def page_garantias(products_df, df_clients):
                                                       for h in g["historico"][-4:]))
 
         _sub_defs = [("⚡ Ativas", STATUS_ATIVOS, "atv"),
-                     ("🔴 Abertas", ["Aberta"], "ab"),
+                     ("📬 Aguard. chegada", ["Aguardando chegada"], "ab"),
                      ("🔧 Em bancada", ["Em bancada"], "bc"),
                      ("📦 Aguard. peça", ["Aguardando peça"], "pc"),
+                     ("🚚 Aguard. R$ frete", ["Confirmado — aguardando R$ frete"], "fr"),
                      ("✅ Concluídas", ["Concluída"], "co"),
-                     ("🏁 Devolvidas", ["Devolvida ao cliente"], "dv"),
                      ("🚫 Canceladas", ["Cancelada"], "cn"),
                      ("📚 Todas", STATUS_GARANTIA, "td")]
         _listas = {tk: _filtra(sts) for _, sts, tk in _sub_defs}
@@ -1818,23 +1871,35 @@ def page_garantias(products_df, df_clients):
             st.info("Nenhuma garantia registrada ainda. Os indicadores nascem conforme o time registra.")
         else:
             atng = [g for g in garantias if g.get("status") in STATUS_ATIVOS]
-            concl = [g for g in garantias if g.get("status") in ("Concluída", "Devolvida ao cliente")]
+            # "concluída operacionalmente" = serviço feito e enviado (mesmo aguardando R$ do frete)
+            concl = [g for g in garantias
+                     if g.get("status") in ("Confirmado — aguardando R$ frete", "Concluída")]
             for g in garantias:
                 if not g.get("custo_total"):
                     g["custo_total"] = _garantia_custo_total(g, custo_map)
             mes_atual = datetime.now().strftime("%Y-%m")
             custo_mes = sum(g["custo_total"] for g in concl if str(g.get("concluido_em", "")).startswith(mes_atual))
-            tempos = []
-            for g in concl:
+
+            def _dtd(s):
                 try:
-                    d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
-                    d1 = datetime.strptime(g["concluido_em"][:10], "%Y-%m-%d")
-                    tempos.append((d1 - d0).days)
+                    return datetime.strptime(str(s)[:10], "%Y-%m-%d")
                 except Exception:
-                    pass
+                    return None
+            # tempo na casa: chegada -> envio (dado novo); fallback: registro -> conclusão
+            t_casa = [(_dtd(g.get("data_envio")) - _dtd(g.get("data_chegada"))).days
+                      for g in concl
+                      if _dtd(g.get("data_envio")) and _dtd(g.get("data_chegada"))
+                      and _dtd(g.get("data_envio")) >= _dtd(g.get("data_chegada"))]
+            if t_casa:
+                _t_label, _t_valor = "⏱️ Tempo na casa (chegada→envio)", f"{sum(t_casa)/len(t_casa):.0f} dias"
+            else:
+                t_reg = [(_dtd(g.get("concluido_em")) - _dtd(g.get("criado_em"))).days
+                         for g in concl if _dtd(g.get("concluido_em")) and _dtd(g.get("criado_em"))]
+                _t_label = "⏱️ Tempo médio (registro→conclusão)"
+                _t_valor = f"{sum(t_reg)/len(t_reg):.0f} dias" if t_reg else "—"
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("🔴 Na casa (abertas)", len(atng))
-            k2.metric("⏱️ Tempo médio de conserto", f"{sum(tempos)/len(tempos):.0f} dias" if tempos else "—")
+            k1.metric("🔴 Em aberto", len(atng))
+            k2.metric(_t_label, _t_valor)
             k3.metric("💸 Custo no mês", fmt_brl(custo_mes))
             k4.metric("📋 Total histórico", len(garantias))
             st.divider()
@@ -1866,7 +1931,7 @@ def page_garantias(products_df, df_clients):
             show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
                              height=min(420, 35 * len(disp) + 38))
             if len(concl):
-                st.markdown("**Peças mais consumidas** (planejar reposição)")
+                st.markdown("**Peças e serviços mais usados** (planejar reposição / carga da bancada)")
                 cons = defaultdict(lambda: {"qtd": 0, "custo": 0.0})
                 for g in garantias:
                     for p in g.get("pecas", []):
@@ -1890,6 +1955,7 @@ def page_garantias(products_df, df_clients):
                              "Defeito": _rotulo_outro(g.get("defeito"), g.get("defeito_outro")),
                              "Relato": g.get("defeito_obs"),
                              "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
+                             "Data chegada": g.get("data_chegada", ""), "Data envio": g.get("data_envio", ""),
                              "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g.get("pecas", [])),
                              "Frete vinda": g.get("frete_vinda", 0), "Frete volta": g.get("frete_volta", 0),
                              "Sem frete (justif.)": g.get("frete_obs", ""),

@@ -10,6 +10,7 @@ import json
 import base64
 import threading
 import requests
+from collections import defaultdict
 from datetime import datetime, timedelta, date
 
 # ============================================================
@@ -491,6 +492,83 @@ def _fmt_motivo(r):
     return mot or obs
 
 # ============================================================
+# GARANTIAS / ASSISTÊNCIA TÉCNICA
+# Registro estruturado do que a NF não conta: defeito, causa, peças, custo.
+# Persistência ATÔMICA no GitHub (mesmo motor das inativações).
+# ============================================================
+GARANTIAS_FILE = os.path.join(os.path.dirname(__file__), "garantias.json")
+
+STATUS_GARANTIA = ["Aberta", "Em bancada", "Aguardando peça", "Concluída", "Devolvida ao cliente", "Cancelada"]
+STATUS_ATIVOS = ["Aberta", "Em bancada", "Aguardando peça"]
+CANAIS_GARANTIA = ["Distribuição", "Varejo", "Feira", "Site", "Outro"]
+DEFEITOS_GARANTIA = ["Não liga", "Motor", "Bateria / não carrega", "Carregador / fonte", "Lâmina / corte",
+                     "Botão / interruptor", "Carcaça quebrada", "Ruído / vibração", "Esquenta demais",
+                     "Display / luz", "Dano de transporte", "Outro"]
+CAUSAS_GARANTIA = ["Defeito de fabricação", "Mau uso do cliente", "Desgaste natural",
+                   "Dano de transporte", "Instalação/voltagem errada", "Sem defeito constatado", "Outra"]
+RESULTADOS_GARANTIA = ["Consertada", "Trocada por produto novo", "Reembolso", "Recusada (fora de garantia)",
+                       "Devolvida sem conserto"]
+
+def can_manage_garantias():
+    return st.session_state.get('role') in ('admin', 'diretor', 'garantia')
+
+def load_garantias():
+    data = _read_state_json("garantias.json", GARANTIAS_FILE, {"garantias": []})
+    try:
+        return data.get("garantias", [])
+    except Exception:
+        return []
+
+def add_garantia(reg):
+    """Cria um registro de garantia (id sequencial G-0001...) de forma atômica.
+    Retorna (id, ok)."""
+    quem = st.session_state.get("user_name", "")
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+    out = {}
+
+    def apply(d):
+        gs = list(d.get("garantias", []))
+        seq = 1 + max([int(g["id"].split("-")[1]) for g in gs if str(g.get("id", "")).startswith("G-")] or [0])
+        gid = f"G-{seq:04d}"
+        novo = dict(reg)
+        novo.update({"id": gid, "criado_em": agora, "criado_por": quem, "status": "Aberta",
+                     "historico": [{"em": agora, "por": quem, "acao": "Registro criado"}]})
+        gs.append(novo)
+        out["id"] = gid
+        return {"garantias": gs}
+
+    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+    return out.get("id"), ok
+
+def update_garantia(gid, updates, acao):
+    """Atualiza um registro (merge) de forma atômica + linha de histórico."""
+    quem = st.session_state.get("user_name", "")
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def apply(d):
+        gs = list(d.get("garantias", []))
+        for g in gs:
+            if g.get("id") == gid:
+                g.update(updates)
+                g.setdefault("historico", []).append({"em": agora, "por": quem, "acao": acao})
+                break
+        return {"garantias": gs}
+
+    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+    return ok
+
+def _garantia_custo_total(g, custo_map):
+    """Custo real do caso: peças + extra + produto inteiro se trocado por novo."""
+    total = 0.0
+    for p in g.get("pecas", []):
+        c = p.get("custo") or custo_map.get(str(p.get("sku", "")).strip(), 0) or 0
+        total += (p.get("qtd", 1) or 1) * c
+    total += g.get("custo_extra", 0) or 0
+    if g.get("resultado") == "Trocada por produto novo":
+        total += custo_map.get(str(g.get("produto_sku", "")).strip(), 0) or 0
+    return round(total, 2)
+
+# ============================================================
 # PERSISTÊNCIA REMOTA (GitHub) — o disco do Streamlit Cloud é
 # temporário: tudo que não está no repositório some quando o
 # container reinicia. Arquivos de ESTADO (usuários, inativados,
@@ -502,7 +580,7 @@ def _fmt_motivo(r):
 _GH_API = "https://api.github.com"
 _GH_REPO = "LeonardoDaros/propetz-bi"
 _GH_STATE_BRANCH = "state"
-_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json"]
+_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json", "garantias.json"]
 _GH_WRITE_LOCK = threading.Lock()  # serializa escritas de estado: evita corrida read-SHA/PUT entre threads
 
 def _gh_token():
@@ -1454,6 +1532,235 @@ def insight_html(type_, label, text, action):
         <div class="insight-action">{action}</div>
     </div>
     """
+
+# ============================================================
+# PAGE: GARANTIAS
+# ============================================================
+def page_garantias(products_df, df_clients):
+    st.header("🔧 Garantias e Assistência")
+
+    meta = load_abc_valor() or {}
+    custo_map = {str(k).strip(): v for k, v in (meta.get("custo_unitario") or {}).items()}
+    vendas_map = {str(k).strip(): v for k, v in (meta.get("vendas_12m_todos_canais") or {}).items()}
+
+    prod_opts = [f"{r['code']} — {r['name']}" for _, r in products_df.iterrows()]
+    cli_dist = sorted(df_clients['name'].unique().tolist()) if len(df_clients) else []
+
+    def _sku_de(opt):
+        return opt.split(" — ")[0].strip() if opt else ""
+
+    garantias = load_garantias()
+    tab_novo, tab_bancada, tab_painel = st.tabs(["📥 Nova Garantia", "🔨 Bancada / Fila", "📊 Painel"])
+
+    # ---------------- NOVA GARANTIA ----------------
+    with tab_novo:
+        st.caption("Registro de entrada — 2 minutos por caso. O que a NF não conta fica registrado aqui.")
+        with st.form("form_nova_garantia"):
+            c1, c2 = st.columns(2)
+            canal = c1.selectbox("Canal *", CANAIS_GARANTIA, index=None, placeholder="De onde vem o cliente...")
+            cliente_dist = c2.selectbox("Cliente da Distribuição (se for)", cli_dist, index=None,
+                                        placeholder="Buscar na base...")
+            cliente_txt = st.text_input("Cliente (nome/razão — obrigatório se não achou acima)")
+            c3, c4 = st.columns([2, 1])
+            produto = c3.selectbox("Produto *", prod_opts, index=None, placeholder="Buscar por código ou nome...")
+            num_serie = c4.text_input("Nº de série")
+            c5, c6 = st.columns(2)
+            nf_entrada = c5.text_input("NF de entrada")
+            defeito = c6.selectbox("Defeito relatado *", DEFEITOS_GARANTIA, index=None,
+                                   placeholder="Categoria do problema...")
+            defeito_obs = st.text_area("Relato do cliente / observações", height=80,
+                                       placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
+            enviar = st.form_submit_button("📥 Registrar entrada", type="primary")
+        if enviar:
+            cliente = (cliente_dist or "").strip() or cliente_txt.strip()
+            faltas = [n for n, v in [("canal", canal), ("cliente", cliente),
+                                     ("produto", produto), ("defeito relatado", defeito)] if not v]
+            if faltas:
+                st.error("⚠️ Preencha: " + ", ".join(faltas) + ". Nada foi registrado.")
+            else:
+                sku = _sku_de(produto)
+                gid, ok = add_garantia({
+                    "canal": canal, "cliente": cliente, "produto_sku": sku,
+                    "produto_nome": produto.split(" — ", 1)[1] if " — " in produto else produto,
+                    "num_serie": num_serie.strip(), "nf_entrada": nf_entrada.strip(),
+                    "defeito": defeito, "defeito_obs": defeito_obs.strip(),
+                    "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
+                    "resultado": "", "nf_saida": "", "custo_total": 0,
+                })
+                if ok:
+                    st.success(f"✅ Garantia **{gid}** registrada — já está na fila da Bancada.")
+                else:
+                    st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
+
+    # ---------------- BANCADA / FILA ----------------
+    with tab_bancada:
+        f1, f2 = st.columns([1, 2])
+        filtro_status = f1.multiselect("Status", STATUS_GARANTIA, default=STATUS_ATIVOS, key="gar_fstatus")
+        busca = f2.text_input("🔍 Buscar (id, cliente, produto, série, NF)", key="gar_busca")
+        vis = [g for g in garantias if g.get("status") in (filtro_status or STATUS_GARANTIA)]
+        if busca.strip():
+            s = busca.strip().lower()
+            vis = [g for g in vis if any(s in str(g.get(k, "")).lower() for k in
+                   ("id", "cliente", "produto_nome", "produto_sku", "num_serie", "nf_entrada", "nf_saida"))]
+        vis.sort(key=lambda g: g.get("criado_em", ""), reverse=False)
+        if not vis:
+            st.info("Nenhuma garantia nesse filtro.")
+        for g in vis:
+            dias = ""
+            try:
+                d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
+                dias = f" | {(datetime.now() - d0).days}d na casa"
+            except Exception:
+                pass
+            icone = {"Aberta": "🔴", "Em bancada": "🔧", "Aguardando peça": "📦",
+                     "Concluída": "✅", "Devolvida ao cliente": "🏁", "Cancelada": "🚫"}.get(g.get("status"), "•")
+            with st.expander(f"{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
+                             f"[{g.get('status')}]{dias}"):
+                st.markdown(f"**Canal:** {g.get('canal','')} | **Série:** {g.get('num_serie') or '—'} | "
+                            f"**NF entrada:** {g.get('nf_entrada') or '—'} | **Entrada:** {g.get('criado_em','')} "
+                            f"por {g.get('criado_por','')}")
+                st.markdown(f"**Defeito relatado:** {g.get('defeito','')} — {g.get('defeito_obs') or 'sem obs.'}")
+                with st.form(f"gar_upd_{g['id']}"):
+                    c1, c2 = st.columns(2)
+                    novo_status = c1.selectbox("Status", STATUS_GARANTIA,
+                                               index=STATUS_GARANTIA.index(g.get("status", "Aberta")),
+                                               key=f"st_{g['id']}")
+                    causa = c2.selectbox("Causa (diagnóstico)", CAUSAS_GARANTIA,
+                                         index=CAUSAS_GARANTIA.index(g["diagnostico_causa"])
+                                         if g.get("diagnostico_causa") in CAUSAS_GARANTIA else None,
+                                         placeholder="Qual foi a causa real...", key=f"ca_{g['id']}")
+                    diag_obs = st.text_area("O que foi feito (diagnóstico/serviço)", value=g.get("diagnostico_obs", ""),
+                                            height=70, key=f"do_{g['id']}")
+                    st.markdown("**Peças trocadas** (até 3 — custo puxa da Base Mãe automaticamente):")
+                    pecas_atuais = g.get("pecas", [])
+                    pecas_novas = []
+                    for slot in range(3):
+                        pc1, pc2 = st.columns([3, 1])
+                        atual = pecas_atuais[slot] if slot < len(pecas_atuais) else None
+                        atual_opt = None
+                        if atual:
+                            # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
+                            _sku_alvo = str(atual.get("sku", "")).strip()
+                            atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
+                        psel = pc1.selectbox(f"Peça {slot+1}", prod_opts,
+                                             index=prod_opts.index(atual_opt) if atual_opt else None,
+                                             placeholder="—", key=f"p{slot}_{g['id']}")
+                        pqtd = pc2.number_input("Qtd", 1, 99, value=int(atual.get("qtd", 1)) if atual else 1,
+                                                key=f"q{slot}_{g['id']}")
+                        if psel:
+                            psku = _sku_de(psel)
+                            pecas_novas.append({"sku": psku,
+                                                "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
+                                                "qtd": int(pqtd),
+                                                "custo": custo_map.get(psku, 0)})
+                    c3, c4, c5 = st.columns(3)
+                    resultado = c3.selectbox("Resultado", RESULTADOS_GARANTIA,
+                                             index=RESULTADOS_GARANTIA.index(g["resultado"])
+                                             if g.get("resultado") in RESULTADOS_GARANTIA else None,
+                                             placeholder="Ao concluir...", key=f"re_{g['id']}")
+                    nf_saida = c4.text_input("NF de saída", value=g.get("nf_saida", ""), key=f"nf_{g['id']}")
+                    custo_extra = c5.number_input("Custo extra R$ (frete etc.)", 0.0, 99999.0,
+                                                  value=float(g.get("custo_extra", 0) or 0), key=f"ce_{g['id']}")
+                    salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
+                if salvar:
+                    if novo_status in ("Concluída", "Devolvida ao cliente") and (not causa or not resultado):
+                        st.error("⚠️ Para concluir, informe a CAUSA e o RESULTADO. Nada foi salvo.")
+                    else:
+                        upd = {"status": novo_status, "diagnostico_causa": causa or "",
+                               "diagnostico_obs": diag_obs.strip(), "pecas": pecas_novas,
+                               "resultado": resultado or "", "nf_saida": nf_saida.strip(),
+                               "custo_extra": float(custo_extra)}
+                        upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
+                        if novo_status in ("Concluída", "Devolvida ao cliente") and not g.get("concluido_em"):
+                            upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        if update_garantia(g["id"], upd, f"Status → {novo_status}"):
+                            st.success(f"✅ {g['id']} atualizada (custo do caso: {fmt_brl_full(upd['custo_total'])}).")
+                            st.rerun()
+                        else:
+                            st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
+                if g.get("historico"):
+                    st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}" for h in g["historico"][-4:]))
+
+    # ---------------- PAINEL ----------------
+    with tab_painel:
+        if not garantias:
+            st.info("Nenhuma garantia registrada ainda. Os indicadores nascem conforme o time registra.")
+        else:
+            atng = [g for g in garantias if g.get("status") in STATUS_ATIVOS]
+            concl = [g for g in garantias if g.get("status") in ("Concluída", "Devolvida ao cliente")]
+            for g in garantias:
+                if not g.get("custo_total"):
+                    g["custo_total"] = _garantia_custo_total(g, custo_map)
+            mes_atual = datetime.now().strftime("%Y-%m")
+            custo_mes = sum(g["custo_total"] for g in concl if str(g.get("concluido_em", "")).startswith(mes_atual))
+            tempos = []
+            for g in concl:
+                try:
+                    d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
+                    d1 = datetime.strptime(g["concluido_em"][:10], "%Y-%m-%d")
+                    tempos.append((d1 - d0).days)
+                except Exception:
+                    pass
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("🔴 Na casa (abertas)", len(atng))
+            k2.metric("⏱️ Tempo médio de conserto", f"{sum(tempos)/len(tempos):.0f} dias" if tempos else "—")
+            k3.metric("💸 Custo no mês", fmt_brl(custo_mes))
+            k4.metric("📋 Total histórico", len(garantias))
+            st.divider()
+            dfg = pd.DataFrame(garantias)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Defeitos mais comuns (Pareto)**")
+                st.dataframe(dfg["defeito"].value_counts().reset_index().rename(
+                    columns={"defeito": "Defeito", "count": "Casos"}),
+                    use_container_width=True, hide_index=True)
+            with col2:
+                st.markdown("**Causa raiz (diagnóstico da bancada)**")
+                causas = dfg[dfg["diagnostico_causa"] != ""]["diagnostico_causa"].value_counts()
+                if len(causas):
+                    st.dataframe(causas.reset_index().rename(
+                        columns={"diagnostico_causa": "Causa", "count": "Casos"}),
+                        use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Ainda sem diagnósticos concluídos.")
+            st.markdown("**Produtos-problema** (casos × vendas 12m em todos os canais)")
+            agg = dfg.groupby(["produto_sku", "produto_nome"]).agg(
+                Casos=("id", "count"), Custo=("custo_total", "sum")).reset_index()
+            agg["Vendas 12m"] = agg["produto_sku"].map(lambda s: vendas_map.get(str(s).strip(), 0))
+            agg["Taxa garantia"] = agg.apply(
+                lambda r: (r["Casos"] / r["Vendas 12m"]) if r["Vendas 12m"] else None, axis=1)
+            agg = agg.sort_values("Casos", ascending=False).head(20)
+            disp = agg.rename(columns={"produto_sku": "SKU", "produto_nome": "Produto"})
+            disp["Taxa garantia"] = disp["Taxa garantia"].apply(lambda v: f"{v:.1%}" if v is not None else "—")
+            show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
+                             height=min(420, 35 * len(disp) + 38))
+            if len(concl):
+                st.markdown("**Peças mais consumidas** (planejar reposição)")
+                cons = defaultdict(lambda: {"qtd": 0, "custo": 0.0})
+                for g in garantias:
+                    for p in g.get("pecas", []):
+                        c = cons[f"{p.get('sku','')} — {p.get('nome','')[:40]}"]
+                        c["qtd"] += p.get("qtd", 1)
+                        c["custo"] += (p.get("qtd", 1) or 1) * (p.get("custo", 0) or 0)
+                if cons:
+                    dfp = pd.DataFrame([{"Peça": k, "Qtd usada": v["qtd"], "Custo": round(v["custo"], 2)}
+                                        for k, v in cons.items()]).sort_values("Qtd usada", ascending=False)
+                    show_money_table(dfp, ["Custo"], use_container_width=True, hide_index=True,
+                                     height=min(350, 35 * len(dfp) + 38))
+            flat = []
+            for g in garantias:
+                flat.append({"ID": g["id"], "Status": g.get("status"), "Canal": g.get("canal"),
+                             "Cliente": g.get("cliente"), "SKU": g.get("produto_sku"),
+                             "Produto": g.get("produto_nome"), "Série": g.get("num_serie"),
+                             "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
+                             "Defeito": g.get("defeito"), "Relato": g.get("defeito_obs"),
+                             "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
+                             "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g.get("pecas", [])),
+                             "Custo total": g.get("custo_total", 0), "Resultado": g.get("resultado"),
+                             "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
+                             "Registrado por": g.get("criado_por")})
+            _csv_download(pd.DataFrame(flat), "⬇️ Baixar base completa de garantias (Excel/CSV)",
+                          "garantias.csv", "dl_gar")
 
 # ============================================================
 # PAGE: PAINEL DO GESTOR (tela inicial do admin/diretor)
@@ -3287,8 +3594,9 @@ def main():
     with st.sidebar:
         # --- User greeting (compact) ---
         _role = st.session_state['role']
-        _role_icon = "🔑" if _role == 'admin' else ("👔" if _role == 'diretor' else "👤")
-        _role_label = {'admin': 'Admin', 'diretor': 'Diretora', 'vendedor': 'Vendedor'}.get(_role, _role.title())
+        _role_icon = {'admin': '🔑', 'diretor': '👔', 'garantia': '🔧'}.get(_role, '👤')
+        _role_label = {'admin': 'Admin', 'diretor': 'Diretora', 'vendedor': 'Vendedor',
+                       'garantia': 'Garantia'}.get(_role, _role.title())
         st.markdown(f"""
         <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px 0">
             <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
@@ -3301,7 +3609,9 @@ def main():
         """, unsafe_allow_html=True)
 
         # --- Navigation ---
-        if has_full_data_access():
+        if st.session_state["role"] == "garantia":
+            pages = {"🔧 Garantias": "garantia"}
+        elif has_full_data_access():
             pages = {
                 "🎛️ Painel do Gestor": "manager",
                 "✅ Ações do Time": "actions",
@@ -3310,6 +3620,7 @@ def main():
                 "🧩 Mix de Produtos": "mix",
                 "⚠️ Churn": "churn",
                 "📦 Produtos": "products",
+                "🔧 Garantias": "garantia",
             }
             if st.session_state["role"] == "admin":
                 pages["⚙️ Admin"] = "admin"
@@ -3510,7 +3821,9 @@ def main():
         st.session_state[_page_log_key] = True
         log_page_view(st.session_state.get("username", ""), selected_page)
 
-    if page == "manager":
+    if page == "garantia":
+        page_garantias(df_products, df_clients)
+    elif page == "manager":
         page_manager(df_clients, months, df_sku, df_products)
     elif page == "actions":
         page_actions(df_clients, df_sku, df_products, df_client_products, months)

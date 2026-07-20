@@ -568,6 +568,7 @@ def update_garantia(gid, updates, acao):
             if g.get("id") == gid:
                 g.update(updates)
                 g.setdefault("historico", []).append({"em": agora, "por": quem, "acao": acao})
+                g["historico"] = g["historico"][-300:]  # cap: histórico não infla o json sem limite
                 break
         return {"garantias": gs}
 
@@ -584,7 +585,8 @@ def anexar_documento_garantia(gid, arquivo):
     if len(conteudo) > 8 * 1024 * 1024:
         return False, "Arquivo acima de 8 MB — reduza (foto menor ou PDF compactado)."
     seguro = re.sub(r"[^A-Za-z0-9._-]", "_", arquivo.name)[:60] or "arquivo"
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # microssegundos no nome: dois uploads no mesmo segundo não colidem
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S%f")
     caminho = f"anexos/{gid}/{ts}_{seguro}"
     tok = _gh_token()
     if tok:
@@ -605,6 +607,7 @@ def anexar_documento_garantia(gid, arquivo):
                 g.setdefault("anexos", []).append(meta)
                 g.setdefault("historico", []).append(
                     {"em": meta["em"], "por": meta["por"], "acao": f"Anexo adicionado: {seguro}"})
+                g["historico"] = g["historico"][-300:]
                 break
         return {"garantias": gs}
 
@@ -616,7 +619,7 @@ def baixar_anexo_garantia(caminho):
     tok = _gh_token()
     if tok:
         conteudo, _ = _gh_get_file(caminho, _GH_STATE_BRANCH, token=tok)
-        return conteudo
+        return conteudo or None  # b"" (falha/corpo não veio) nunca vira download vazio
     local = os.path.join(os.path.dirname(__file__), caminho.replace("/", os.sep))
     try:
         with open(local, "rb") as f:
@@ -675,16 +678,31 @@ def _gh_token():
 def _gh_headers(token):
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
-def _gh_get_file(path, branch, token=None):
-    """Lê um arquivo do repo. Retorna (bytes, sha) ou (None, None)."""
+def _gh_get_file(path, branch, token=None, so_sha=False):
+    """Lê um arquivo do repo. Retorna (bytes, sha) ou (None, None).
+    Arquivos de 1 a 100 MB: a API contents responde 200 com content=\"\" e
+    encoding=\"none\" — nesse caso refaz o GET pedindo o corpo bruto (raw).
+    Sem esse tratamento, um estado >1MB seria lido como VAZIO com sha válido
+    (e a próxima gravação sobrescreveria tudo). so_sha=True pula o download
+    do corpo nesse caso (para quem só precisa do sha, ex.: PUT)."""
     token = token or _gh_token()
     if not token:
         return None, None
     try:
-        r = requests.get(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
-                         params={"ref": branch}, headers=_gh_headers(token), timeout=15)
+        url = f"{_GH_API}/repos/{_GH_REPO}/contents/{path}"
+        r = requests.get(url, params={"ref": branch},
+                         headers=_gh_headers(token), timeout=15)
         if r.status_code == 200:
             data = r.json()
+            if data.get("encoding") == "none":
+                if so_sha:
+                    return b"", data["sha"]
+                hdr = _gh_headers(token)
+                hdr["Accept"] = "application/vnd.github.raw+json"
+                r2 = requests.get(url, params={"ref": branch}, headers=hdr, timeout=60)
+                if r2.status_code == 200:
+                    return r2.content, data["sha"]
+                return None, None
             return base64.b64decode(data["content"]), data["sha"]
     except Exception:
         pass
@@ -713,22 +731,30 @@ def _gh_ensure_state_branch(token=None):
         return False
 
 def _gh_put_file(path, content_bytes, message, branch, token=None):
-    """Cria/atualiza um arquivo no repo. Retorna True se salvou."""
+    """Cria/atualiza um arquivo no repo. Retorna True se salvou.
+    409/422 = o sha ficou velho entre o GET e o PUT (outra gravação no branch)
+    ou dois PUTs criaram o mesmo arquivo ao mesmo tempo — relê o sha e tenta
+    mais uma vez em vez de devolver falha espúria."""
     token = token or _gh_token()
     if not token:
         return False
     try:
         if branch == _GH_STATE_BRANCH and not _gh_ensure_state_branch(token=token):
             return False
-        _, sha = _gh_get_file(path, branch, token=token)
-        payload = {"message": message,
-                   "content": base64.b64encode(content_bytes).decode(),
-                   "branch": branch}
-        if sha:
-            payload["sha"] = sha
-        r = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
-                         json=payload, headers=_gh_headers(token), timeout=60)
-        return r.status_code in (200, 201)
+        for _ in range(2):
+            _, sha = _gh_get_file(path, branch, token=token, so_sha=True)
+            payload = {"message": message,
+                       "content": base64.b64encode(content_bytes).decode(),
+                       "branch": branch}
+            if sha:
+                payload["sha"] = sha
+            r = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                             json=payload, headers=_gh_headers(token), timeout=60)
+            if r.status_code in (200, 201):
+                return True
+            if r.status_code not in (409, 422):
+                return False
+        return False
     except Exception:
         return False
 
@@ -779,11 +805,15 @@ def _gh_mutate_json(remote_name, local_path, apply_fn, default, token=None):
         new, ok = None, False
         for _ in range(5):
             content, sha = _gh_get_file(remote_name, _GH_STATE_BRANCH, token=tok)
-            if content is not None:
+            if content:
                 try:
                     cur = json.loads(content.decode('utf-8'))
                 except Exception:
-                    cur = default
+                    break  # remoto EXISTE mas está ilegível: abortar (ok=False) —
+                           # jamais aplicar mudanças sobre default segurando um sha
+                           # válido, isso sobrescreveria a base inteira em silêncio
+            elif content is not None:
+                cur = default  # arquivo existe porém vazio: seguro partir do default
             else:
                 _gh_ensure_state_branch(token=tok)  # arquivo/branch ainda não existe
                 cur, sha = default, None
@@ -794,7 +824,9 @@ def _gh_mutate_json(remote_name, local_path, apply_fn, default, token=None):
             if before is not None and json.dumps(new, sort_keys=True, ensure_ascii=False) == before:
                 ok = True  # nada mudou de fato (ex.: já inativo, ou duplicata) → já persistido
                 break
-            body = json.dumps(new, ensure_ascii=False, indent=1).encode('utf-8')
+            # compacto (sem indentação): metade do tamanho do indent=1 — afasta
+            # o limite de 1 MB da API contents do GitHub
+            body = json.dumps(new, ensure_ascii=False, separators=(",", ":")).encode('utf-8')
             done, status = _gh_put_file_status(remote_name, body, f"Estado: {remote_name}",
                                                 _GH_STATE_BRANCH, sha, tok)
             if done:
@@ -1691,7 +1723,10 @@ def page_garantias(products_df, df_clients):
         defeito_obs = st.text_area("Relato do cliente / observações", height=80, key="gn_obs",
                                    placeholder="O que o cliente disse? Quando começou? Acessórios recebidos junto...")
         if st.button("📥 Registrar entrada", type="primary", key="gn_enviar"):
-            cliente = (cliente_dist or "").strip() or cliente_txt.strip()
+            # o campo de TEXTO manda: é o que o funcionário está vendo na tela
+            # (o autofill já o preenche ao escolher o distribuidor; se ele editar
+            # depois — 'Loja 2', razão social corrigida — a edição vale)
+            cliente = cliente_txt.strip() or (cliente_dist or "").strip()
             faltas = [n for n, v in [("canal", canal), ("cliente", cliente), ("produto", produto),
                                      ("defeito relatado", defeito)] if not v]
             if canal == "Outro" and not canal_outro.strip():
@@ -1734,6 +1769,10 @@ def page_garantias(products_df, df_clients):
 
     # ---------------- BANCADA / FILA (sub-abas por status) ----------------
     with tab_bancada:
+        _fl = st.session_state.pop("gar_flash_bancada", None)
+        if _fl:
+            st.success(_fl)
+            st.toast(_fl)
         busca = st.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
 
         def _filtra(status_lista):
@@ -1815,14 +1854,20 @@ def page_garantias(products_df, df_clients):
                                                 file_name=a.get("nome", "anexo"),
                                                 key=f"dlax_{tk}_{g['id']}_{ai}")
                     if not _fechada or can_edit_garantia_fechada():
+                        # nonce na key: após anexar com sucesso a key muda e o uploader
+                        # esvazia — sem ele o arquivo ficava retido e um 2º clique
+                        # duplicava o anexo
+                        _axv = st.session_state.get(f"axv_{g['id']}", 0)
                         _novo_anexo = st.file_uploader("Adicionar anexo (PDF, foto... máx. 8 MB)",
-                                                       key=f"upax_{tk}_{g['id']}")
+                                                       key=f"upax_{tk}_{g['id']}_{_axv}")
                         if _novo_anexo is not None:
                             if st.button(f"📎 Anexar '{_novo_anexo.name[:30]}'",
                                          key=f"btnax_{tk}_{g['id']}", type="secondary"):
                                 _okx, _msgx = anexar_documento_garantia(g["id"], _novo_anexo)
                                 if _okx:
-                                    st.success(_msgx)
+                                    st.session_state[f"axv_{g['id']}"] = _axv + 1
+                                    # flash: st.success aqui morreria no rerun sem ser visto
+                                    st.session_state["gar_flash_bancada"] = f"📎 {_msgx}"
                                     st.rerun()
                                 else:
                                     st.error(_msgx)
@@ -2028,18 +2073,28 @@ def page_garantias(products_df, df_clients):
                         st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
                                                       for h in g["historico"][-4:]))
 
+        # Cancelada = exclusão lógica: só master/admin/diretor enxergam.
+        # Para Marcos/Pedro não há sub-aba Canceladas e 'Todas' as omite.
+        _ve_canceladas = can_edit_garantia_fechada() or has_full_data_access()
         _sub_defs = [("⚡ Ativas", STATUS_ATIVOS, "atv"),
                      ("📬 Aguard. chegada", ["Aguardando chegada"], "ab"),
                      ("🔧 Em bancada", ["Em bancada"], "bc"),
                      ("📦 Aguard. peça", ["Aguardando peça"], "pc"),
                      ("🚚 Aguard. R$ frete", ["Confirmado — aguardando R$ frete"], "fr"),
-                     ("✅ Concluídas", ["Concluída"], "co"),
-                     ("🚫 Canceladas", ["Cancelada"], "cn"),
-                     ("📚 Todas", STATUS_GARANTIA, "td")]
+                     ("✅ Concluídas", ["Concluída"], "co")]
+        if _ve_canceladas:
+            _sub_defs += [("🚫 Canceladas", ["Cancelada"], "cn"),
+                          ("📚 Todas", STATUS_GARANTIA, "td")]
+        else:
+            _sub_defs += [("📚 Todas", [s for s in STATUS_GARANTIA if s != "Cancelada"], "td")]
         _listas = {tk: _filtra(sts) for _, sts, tk in _sub_defs}
-        _subtabs = st.tabs([f"{rot} ({len(_listas[tk])})" for rot, _, tk in _sub_defs])
+        # rótulos FIXOS (sem contadores): rótulo que muda faz o st.tabs voltar
+        # para a primeira aba a cada save/busca — contagem vai dentro da aba
+        _subtabs = st.tabs([rot for rot, _, tk in _sub_defs])
         for (_rot, _sts, tk), _stab in zip(_sub_defs, _subtabs):
             with _stab:
+                if _listas[tk]:
+                    st.caption(f"{len(_listas[tk])} garantia(s) nesta fila")
                 _render_fila(_listas[tk], tk)
 
     # ---------------- PAINEL ----------------
@@ -2104,7 +2159,7 @@ def page_garantias(products_df, df_clients):
                 lambda r: (r["Casos"] / r["Vendas 12m"]) if r["Vendas 12m"] else None, axis=1)
             agg = agg.sort_values("Casos", ascending=False).head(20)
             disp = agg.rename(columns={"produto_sku": "SKU", "produto_nome": "Produto"})
-            disp["Taxa garantia"] = disp["Taxa garantia"].apply(lambda v: f"{v:.1%}" if v is not None else "—")
+            disp["Taxa garantia"] = disp["Taxa garantia"].apply(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
             show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
                              height=min(420, 35 * len(disp) + 38))
             if len(concl):

@@ -7,5 +7,12 @@ Qtd_Comprada_Por_Cliente_RECONSTRUIDA.xlsx
 *.backup_*
 *.gif
 Tutorial*.docx
+TABELA FOB*.xlsx
+Pedido Propetz*.xlsx
+_modelo_tabela.json
+Relatorio_Sombra_Churn.md
+divergencias_churn.csv
+depara_clientes_silver.json
+Tabela Base clientes*.xlsx
 DEPLOY.md
 .sessions/

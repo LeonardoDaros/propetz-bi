@@ -26,7 +26,7 @@ from ponte_db_silver import consultar
 import openpyxl
 from datetime import datetime
 
-HOJE = date(2026, 7, 21)
+HOJE = date.today()  # rotina diária: sempre a data corrente
 PLANILHA = os.path.join(BASE, "Relatorio Distribuidores Mensal.xlsx")
 MESES_PT = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
             "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12}
@@ -472,8 +472,34 @@ with open(os.path.join(BASE, "divergencias_churn.csv"), "w", encoding="utf-8-sig
     for d in diverg + frescor:
         w.writerow(d)
 
+# ---------------- 6. SAÍDA P/ O APP (Fase 2: silver_distribuicao.json) ----------------
+# O app AINDA NÃO lê este arquivo — ele é publicado no branch state pela rotina
+# diária e ficará pronto p/ a Fase 2 (churn com data real de NF) após auditoria.
+saida_app = {
+    "gerado_em": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    "fonte": "silver.faturamento (NF de Venda, Distribuição PROPETZ, 2026+)",
+    "ancora_planilha": f"{ancora[1]:02d}/{ancora[0]}",
+    "resumo": {"iguais": iguais, "frescor": len(frescor), "divergencias": len(diverg),
+               "defasagem": len(defasagem), "nomes_casados": len(depara),
+               "sem_codigo": len(sem_match), "ambiguos": len(ambiguos)},
+    "clientes": {cod: {
+        "ultima_compra_real": str(b["ultima_compra"]),
+        "notas_2026": int(b["notas"]),
+        "receita_2026": round(float(b["receita"]), 2),
+        "cidade": b.get("cidade") or "", "uf": b.get("uf") or ""}
+        for cod, b in banco_por_cod.items()},
+    "novos_sem_cadastro": [{"nome": b["cliente_nome"],
+                            "receita_2026": round(float(b["receita"]), 2),
+                            "ultima": str(b["ultima_compra"]),
+                            "cidade": b.get("cidade") or "", "uf": b.get("uf") or ""}
+                           for b in sem_match],
+}
+with open(os.path.join(BASE, "silver_distribuicao.json"), "w", encoding="utf-8") as f:
+    json.dump(saida_app, f, ensure_ascii=False, separators=(",", ":"))
+
 print(f"\nIGUAIS: {iguais} | FRESCOR: {len(frescor)} | DIVERGÊNCIA REAL: {len(diverg)} "
       f"| DEFASAGEM (diária mudaria hoje): {len(defasagem)}")
+print(f"silver_distribuicao.json: {len(saida_app['clientes'])} clientes por código")
 print(f"cegos: {len(cegos)} (saudáveis a conferir: {len(cegos_saudaveis)}) | "
       f"ambíguos: {len(ambiguos)}")
 print(f"relatório: {rel}")

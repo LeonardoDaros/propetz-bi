@@ -14,5 +14,8 @@ Relatorio_Sombra_Churn.md
 divergencias_churn.csv
 depara_clientes_silver.json
 Tabela Base clientes*.xlsx
+silver_distribuicao.json
+silver_diaria.log
 DEPLOY.md
 .sessions/
+Novos valores*.xlsx

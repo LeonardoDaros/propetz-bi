@@ -609,6 +609,35 @@ def delete_garantia(gid):
     _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
     return ok
 
+SILVER_DIST_FILE = os.path.join(os.path.dirname(__file__), "silver_distribuicao.json")
+
+def load_silver_distribuicao():
+    """FASE 2 (aprovada 22/07): última compra REAL por código de cliente, vinda
+    do banco silver e publicada de hora em hora no branch state pela rotina
+    local. Sem arquivo/token → {} e o app segue 100% na planilha (comportamento
+    pré-Fase 2, degradação graciosa obrigatória)."""
+    data = _read_state_json("silver_distribuicao.json", SILVER_DIST_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+def _parse_label_ym(label):
+    """Rótulo de mês da planilha -> (ano, mês). Aceita 'jun/26' e datetime-string
+    ('2026-06-01 00:00:00') — a MESMA dualidade da pegadinha do process_excel."""
+    s = str(label or "").strip().lower()
+    meses = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
+             "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12}
+    if "/" in s:
+        p = s.split("/")
+        if len(p) == 2 and p[0][:3] in meses:
+            try:
+                return (2000 + int(p[1]), meses[p[0][:3]])
+            except ValueError:
+                return None
+    try:
+        d = datetime.strptime(s[:10], "%Y-%m-%d")
+        return (d.year, d.month)
+    except ValueError:
+        return None
+
 def _rotulo_outro(valor, detalhe):
     """'Outro' vira 'Outro (detalhe)' quando o usuário especificou."""
     if valor == "Outro" and str(detalhe or "").strip():
@@ -1366,7 +1395,9 @@ def process_excel(xlsx_path):
         c['monthly'] = c['monthly'][:last_data_idx+1]
 
     # ---- ENRICH CLIENTS ----
-    year_ranges = {'2021':(0,4),'2022':(4,16),'2023':(16,28),'2024':(28,40),'2025':(40,52),'2026':(52,54)}
+    # 2026 vai até (52,64): o range antigo (52,54) parava em fev/26 e o gráfico
+    # "Receita por Ano" subcontava o ano (achado da auditoria da Fase 2)
+    year_ranges = {'2021':(0,4),'2022':(4,16),'2023':(16,28),'2024':(28,40),'2025':(40,52),'2026':(52,64)}
 
     for client in clients:
         cn = client['name']
@@ -1425,6 +1456,42 @@ def process_excel(xlsx_path):
                 break
         client['last_purchase'] = month_labels[last_idx] if last_idx >= 0 else 'Nunca'
         client['months_since'] = (len(month_labels) - 1 - last_idx) if last_idx >= 0 else 999
+
+    # ---- FASE 2 (22/07): última compra REAL do banco silver, por CÓDIGO ----
+    # Reconciliação validada pela sombra (3 auditorias): o banco é CEGO antes
+    # de 2026 e a planilha ENVELHECE após o upload — vale a data mais recente
+    # das duas fontes, com a régua ancorada em HOJE (não no último mês carregado).
+    silver_dist = load_silver_distribuicao()
+    # BLINDAGEM (auditoria Fase 2): estrutura inesperada no json NUNCA pode
+    # derrubar o load_data — qualquer coisa fora do formato vira "sem silver"
+    silver_cli = silver_dist.get("clientes", {}) if isinstance(silver_dist, dict) else {}
+    if not isinstance(silver_cli, dict):
+        silver_cli = {}
+    if silver_cli and month_labels:
+        _anc = _parse_label_ym(month_labels[-1])
+        _hoje = date.today()
+        for client in clients:
+            try:
+                info = silver_cli.get(client['id'])
+                if not isinstance(info, dict):
+                    continue
+                _u = datetime.strptime(str(info.get("ultima_compra_real", ""))[:10],
+                                       "%Y-%m-%d").date()
+                pl_ym = None
+                if _anc and client['months_since'] < 999:
+                    _tot = _anc[0] * 12 + (_anc[1] - 1) - client['months_since']
+                    pl_ym = (_tot // 12, _tot % 12 + 1)
+                bk_ym = (_u.year, _u.month)
+                ef_ym = max(x for x in (pl_ym, bk_ym) if x)
+                meses = max(0, (_hoje.year * 12 + _hoje.month) - (ef_ym[0] * 12 + ef_ym[1]))
+            except Exception:
+                continue  # cliente com dado estranho fica 100% na planilha
+            client['months_since'] = meses
+            client['risk'] = ('Recuperação' if meses >= 6
+                              else ('Atenção' if meses >= 3 else 'Saudável'))
+            if bk_ym >= (pl_ym or (0, 0)):
+                # banco vence (ou empata no mês): mostra a DATA REAL da NF
+                client['last_purchase'] = _u.strftime("%d/%m/%Y")
 
     # Convert to DataFrame
     df_clients = pd.DataFrame(clients)
@@ -3476,6 +3543,21 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
 # ============================================================
 def page_churn(df, months, sel_indices_sorted, sel_months):
     st.header("⚠️ Gestão de Churn")
+
+    _sv = load_silver_distribuicao()
+    if isinstance(_sv, dict) and _sv.get("clientes"):
+        st.caption("🔄 Fonte DarosCorp conectada — última publicação: "
+                   f"{_sv.get('gerado_em', '?')} (a classificação reflete em até 1h). "
+                   "Clientes sem nota em 2026 seguem pela planilha (histórico).")
+        _novos = _sv.get("novos_sem_cadastro")
+        _novos = [n for n in _novos if isinstance(n, dict)] if isinstance(_novos, list) else []
+        if _novos and has_full_data_access():
+            with st.expander(f"🆕 Comprando na fonte SEM cadastro na planilha ({len(_novos)}) — "
+                             "cadastrar no fechamento do mês"):
+                for n in _novos:
+                    st.markdown(f"- **{n.get('nome', '?')}** — {fmt_brl(n.get('receita_2026', 0))} "
+                                f"em 2026, última NF {n.get('ultima', '?')} "
+                                f"({n.get('cidade', '?')}/{n.get('uf', '?')})")
 
     period_label = f"{sel_months[0]} - {sel_months[-1]}" if len(sel_months) > 1 else (sel_months[0] if sel_months else "")
 

@@ -619,24 +619,7 @@ def load_silver_distribuicao():
     data = _read_state_json("silver_distribuicao.json", SILVER_DIST_FILE, {})
     return data if isinstance(data, dict) else {}
 
-def _parse_label_ym(label):
-    """Rótulo de mês da planilha -> (ano, mês). Aceita 'jun/26' e datetime-string
-    ('2026-06-01 00:00:00') — a MESMA dualidade da pegadinha do process_excel."""
-    s = str(label or "").strip().lower()
-    meses = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
-             "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12}
-    if "/" in s:
-        p = s.split("/")
-        if len(p) == 2 and p[0][:3] in meses:
-            try:
-                return (2000 + int(p[1]), meses[p[0][:3]])
-            except ValueError:
-                return None
-    try:
-        d = datetime.strptime(s[:10], "%Y-%m-%d")
-        return (d.year, d.month)
-    except ValueError:
-        return None
+from util_comum import parse_label_ym as _parse_label_ym  # reuso (regra global nº 6)
 
 def _rotulo_outro(valor, detalhe):
     """'Outro' vira 'Outro (detalhe)' quando o usuário especificou."""
@@ -989,44 +972,29 @@ def _sync_state_from_github():
     return True
 
 # ============================================================
-# SESSION PERSISTENCE (via query params — native Streamlit, no extra libs)
+# AUTENTICAÇÃO — SÓ via sessão do servidor (st.session_state).
+#
+# HISTÓRICO (2026-07-23): havia login automático por parâmetros de URL
+# (?u=&t=), com token = sha256("usuario:hash_senha:propetz")[:16]. Falha grave:
+# o token derivava do hash da senha + palavra fixa NO CÓDIGO, então NUNCA
+# expirava, valia em qualquer navegador e — como os hashes viviam no repo — era
+# forjável para qualquer usuário. REMOVIDO. Login agora é só pelo formulário; a
+# sessão vive no servidor (st.session_state), não trafega na URL e não é
+# compartilhável. Efeito colateral aceito: recarregar a página (F5) pede login
+# de novo. NUNCA reintroduzir auth por query param.
 # ============================================================
-def _auto_login_from_params():
-    """Try to restore session from URL query params. Returns True if restored."""
+def _strip_stale_auth_params():
+    """Remove ?u=/?t= que um link antigo ainda possa carregar — não concede
+    NENHUM acesso (só limpa a URL para o token não ficar visível/registrado)."""
     try:
-        u = st.query_params.get("u", "")
-        t = st.query_params.get("t", "")
-        if not u or not t:
-            return False
-        # Validate token
-        users = load_users()
-        user = users["users"].get(u)
-        if not user:
-            return False
-        expected_token = hashlib.sha256(f"{u}:{user['password']}:propetz".encode()).hexdigest()[:16]
-        if t != expected_token:
-            return False
-        st.session_state["authenticated"] = True
-        st.session_state["username"] = u
-        st.session_state["user_name"] = user["name"]
-        st.session_state["role"] = user["role"]
-        st.session_state["vendor_filter"] = user.get("vendor_filter")
-        return True
+        mudou = False
+        for k in ("u", "t"):
+            if k in st.query_params:
+                del st.query_params[k]
+                mudou = True
+        return mudou
     except Exception:
         return False
-
-def _set_login_params(username, user):
-    """Save login to URL query params so it survives page refresh."""
-    token = hashlib.sha256(f"{username}:{user['password']}:propetz".encode()).hexdigest()[:16]
-    st.query_params["u"] = username
-    st.query_params["t"] = token
-
-def _clear_login_params():
-    """Clear login params from URL."""
-    try:
-        st.query_params.clear()
-    except Exception:
-        pass
 
 # ============================================================
 # AUTHENTICATION
@@ -1064,7 +1032,6 @@ def login_page():
                     st.session_state["user_name"] = user["name"]
                     st.session_state["role"] = user["role"]
                     st.session_state["vendor_filter"] = user.get("vendor_filter")
-                    _set_login_params(username, user)
                     log_access(username, user["name"], "login")
                     st.rerun()
                 else:
@@ -4027,11 +3994,12 @@ def main():
     # Restaura estado persistido no GitHub (1x por boot do container) — fallback local
     _sync_state_from_github()
 
-    # Check authentication — try auto-login from URL params first
-    if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
-        if not _auto_login_from_params():
-            login_page()
-            return
+    # Autenticação: SÓ sessão do servidor. Links antigos com ?u=&t= não logam
+    # ninguém — os params são apenas apagados da URL.
+    _strip_stale_auth_params()
+    if not st.session_state.get("authenticated"):
+        login_page()
+        return
 
     # Load data
     result = load_data()
@@ -4251,7 +4219,7 @@ def main():
         st.markdown("---")
 
         if st.button("🚪 Sair", use_container_width=True):
-            _clear_login_params()
+            _strip_stale_auth_params()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()

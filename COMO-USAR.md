@@ -16,7 +16,7 @@
 ## Como atualizar a planilha
 
 1. Acesse https://propetz-bi.streamlit.app
-2. Faça login como admin (leonardo / propetz2026)
+2. Faça login como admin (usuário `leonardo`)
 3. Clique em **Admin** no menu lateral
 4. Faça upload da planilha atualizada
 
@@ -46,12 +46,12 @@ editando o `users.yaml` local — a versão do app tem prioridade no boot.
 
 ## Credenciais
 
-| Usuário    | Senha          | Perfil    |
-|------------|----------------|-----------|
-| leonardo   | propetz2026    | Admin     |
-| cristiane  | cristiane2026  | Vendedora |
-| emanuel    | emanuel2026    | Vendedor  |
-| yasmin     | yasmin2026     | Vendedora |
+As senhas **não ficam aqui** (este arquivo vai para o GitHub). A lista completa
+dos 8 usuários está em **`CREDENCIAIS-LOCAL.md`** (na pasta do projeto, fora do
+Git). Trocar/criar senhas pela **página Admin** do app.
+
+Usuários: `leonardo` (admin), `grasiele` (diretor), `cristiane`/`emanuel`/`yasmin`
+(vendedores), `marcos`/`pedro` (garantia), `jacson` (garantia master).
 
 ## Estrutura de arquivos
 

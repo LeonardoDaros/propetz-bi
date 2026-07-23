@@ -3,29 +3,29 @@
 ESTRUTURA (categorias, ordem, múltiplos, barras) vem da TABELA FOB antiga;
 PREÇO/PROMO/ESTOQUE/CUSTO vêm do arquivo-mestre 'Novos valores distribuicao'
 (aba do mês: col F=SKU, O=FOB tabela, Y=PROMO FOB, P=FOB+IPI, I=Estoque, L=Custo TRADE)."""
-import sys, json, re, os, shutil
+import sys, json, os
 sys.stdout.reconfigure(encoding="utf-8")
 import openpyxl
 
-BASE = r"C:\Users\leoda\OneDrive\Área de Trabalho\Automação Dados\Automação Distribuição"
-ARQ = BASE + r"\TABELA FOB AGOSTO 2026 xlsx.xlsx"
-OUT = BASE + r"\_modelo_tabela.json"
+# vive na subpasta "Tabela de Pedido" (organização 22/07); a raiz do projeto
+# (onde fica o abc_valor.json) é a pasta acima
+BASE = os.path.dirname(os.path.abspath(__file__))
+RAIZ = os.path.dirname(BASE)
+ARQ = os.path.join(BASE, "TABELA FOB AGOSTO 2026 xlsx.xlsx")
+if not os.path.exists(ARQ):  # arquivo pode ter ficado na raiz (trava do Excel)
+    ARQ = os.path.join(RAIZ, "TABELA FOB AGOSTO 2026 xlsx.xlsx")
+OUT = os.path.join(BASE, "_modelo_tabela.json")
 NOVOS = (r"C:\Users\leoda\OneDrive\Área de Trabalho\Dcorp\ATUALIZAR MES A MES"
          r"\Tabela de Preço\Novos valores distribuicao (1).xlsx")
 ABA_MES = "Ago-26"
 
-def _abrivel(caminho, apelido):
-    """Arquivo aberto no Excel/OneDrive trava a leitura direta — copia p/ temp."""
-    try:
-        with open(caminho, "rb"):
-            return caminho
-    except PermissionError:
-        destino = os.path.join(os.environ.get("TEMP", "."), apelido)
-        shutil.copy2(caminho, destino)
-        print(f"(fonte travada — lendo cópia: {apelido})")
-        return destino
+sys.path.insert(0, RAIZ)
+from util_comum import abrir_ou_copiar, copiar_para_temp  # reuso (regra global nº 6)
 
-ARQ = _abrivel(ARQ, "_fob_antiga.xlsx")
+_arq_legivel = abrir_ou_copiar(ARQ, "_fob_antiga.xlsx")
+if _arq_legivel != ARQ:
+    print("(fonte travada — lendo cópia: _fob_antiga.xlsx)")
+ARQ = _arq_legivel
 wbv = openpyxl.load_workbook(ARQ, data_only=True)    # valores
 wbf = openpyxl.load_workbook(ARQ, data_only=False)   # fórmulas
 
@@ -55,8 +55,8 @@ for r in range(2, promo_ws.max_row + 1):
 
 # ---- FONTE NOVA (mestre de preços): sobrepõe preço/promo/estoque/custo ----
 # cópia p/ temp: o OneDrive às vezes trava leitura direta do arquivo
-_tmp_novos = os.path.join(os.environ.get("TEMP", "."), "_novos_valores_dist.xlsx")
-shutil.copy2(NOVOS, _tmp_novos)  # sempre via cópia: o mestre vive aberto no Excel
+# sempre via cópia: o mestre vive aberto no Excel
+_tmp_novos = copiar_para_temp(NOVOS, "_novos_valores_dist.xlsx")
 wn = openpyxl.load_workbook(_tmp_novos, data_only=True)[ABA_MES]
 novos = {}   # sku -> {fob, promo, ipi, estoque, custo}
 for r in range(28, wn.max_row + 1):
@@ -73,9 +73,11 @@ for r in range(28, wn.max_row + 1):
     promo = float(y) if isinstance(y, (int, float)) and 0 < y < fob - 0.01 else None
     est = wn.cell(r, 9).value      # I
     custo = wn.cell(r, 12).value   # L = Custo TRADE
+    site = wn.cell(r, 33).value    # AG = preço do site Propetz (base do Seu Lucro)
     novos[sku] = {"fob": round(float(fob), 2), "promo": round(promo, 2) if promo else None,
                   "ipi": ipi, "estoque": est if isinstance(est, (int, float)) else None,
                   "custo": round(float(custo), 2) if isinstance(custo, (int, float)) else None,
+                  "site": round(float(site), 2) if isinstance(site, (int, float)) and site > 0 else None,
                   "promo_bruta": float(y) if isinstance(y, (int, float)) and y > 0 else None}
 
 # preços da fonte nova SUBSTITUEM os da Planilha2 antiga
@@ -235,6 +237,7 @@ for it in produtos:
         if nv["ipi"] is not None:
             it["ipi"] = nv["ipi"]          # IPI da fonte nova (P/O − 1)
         it["estoque"] = nv["estoque"]
+        it["site_propetz"] = nv.get("site")  # base do Seu Lucro (regra 22/07)
         if nv["estoque"] is not None:
             # o estoque do MESTRE manda nos 2 sentidos: zera -> sai do pedido;
             # tem estoque -> volta (a marca vermelha manual da FOB antiga envelhece)
@@ -266,6 +269,7 @@ for it in produtos:
             if nv["ipi"] is not None:
                 it["ipi"] = nv["ipi"]
             it["estoque"] = nv["estoque"]
+            it["site_propetz"] = nv.get("site")
             it["sem_estoque"] = False
             it["barras"] = ""  # barras da variante nova não consta na FOB antiga
             _ja_listados.add(alt)
@@ -283,7 +287,7 @@ for r in range(2, sug.max_row + 1):
 
 # ---- custos (Base Mãe via abc_valor.json) p/ conferência de margem ----
 try:
-    abc = json.load(open(BASE + r"\abc_valor.json", encoding="utf-8"))
+    abc = json.load(open(os.path.join(RAIZ, "abc_valor.json"), encoding="utf-8"))
     custos = abc.get("custo_unitario", {})
 except Exception:
     custos = {}

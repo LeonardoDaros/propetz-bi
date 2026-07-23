@@ -16,36 +16,18 @@ v2 pós-auditoria adversarial de 21/07/2026 (13 achados confirmados):
 Saídas locais (fora do repo): depara_clientes_silver.json,
 Relatorio_Sombra_Churn.md, divergencias_churn.csv.
 """
-import sys, os, json, csv, re, shutil, subprocess, tempfile, unicodedata
-from datetime import date
+import sys, os, json, csv, subprocess
+from datetime import date, datetime
 sys.stdout.reconfigure(encoding="utf-8")
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 from ponte_db_silver import consultar
+from util_comum import parse_label_ym, norm_cliente as norm, copiar_para_temp
 import openpyxl
-from datetime import datetime
 
 HOJE = date.today()  # rotina diária: sempre a data corrente
 PLANILHA = os.path.join(BASE, "Relatorio Distribuidores Mensal.xlsx")
-MESES_PT = {"jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
-            "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12}
-STOP = {"LTDA", "ME", "MEI", "EIRELI", "EPP", "CIA", "LT", "SA",
-        # conectores: sem identidade, e "E" com a regra de inicial viraria curinga
-        "E", "DE", "DA", "DO", "DAS", "DOS", "PARA"}
-
-
-def norm(nome):
-    """Normalização agressiva p/ casar variantes de cadastro do MESMO cliente."""
-    s = str(nome or "").strip().upper()
-    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
-    s = re.sub(r"[\|\-/]+\s*(SN|RN)\s*$", " ", s)   # sufixo de regime tributário
-    s = re.sub(r"[\|]+\s*$", " ", s)                  # "|" sobrando no fim
-    s = s.replace("S/A", " SA ").replace("S.A", " SA ")
-    s = re.sub(r"[^A-Z0-9 ]", " ", s)                 # toda pontuação vira espaço
-    toks = [t for t in s.split()
-            if not (t.isdigit() and len(t) >= 4) and t not in STOP]
-    return " ".join(toks)
 
 
 def toks_de(n):
@@ -91,8 +73,7 @@ def classifica(meses):
 
 
 # ---------------- 1. PLANILHA (o que o app vê hoje) ----------------
-tmp = os.path.join(tempfile.gettempdir(), "_sombra_rel.xlsx")
-shutil.copy2(PLANILHA, tmp)
+tmp = copiar_para_temp(PLANILHA, "_sombra_rel.xlsx")
 wb = openpyxl.load_workbook(tmp, data_only=True, read_only=True)
 ws = wb["Propetz"]
 linhas = list(ws.iter_rows(values_only=True))
@@ -100,16 +81,7 @@ cab = linhas[1]
 
 meses_cols = []
 for idx, v in enumerate(cab):
-    ym = None
-    if isinstance(v, datetime):
-        ym = (v.year, v.month)
-    elif isinstance(v, str) and "/" in v:
-        p = v.strip().lower().split("/")
-        if len(p) == 2 and p[0][:3] in MESES_PT:
-            try:
-                ym = (2000 + int(p[1]), MESES_PT[p[0][:3]])
-            except ValueError:
-                pass
+    ym = parse_label_ym(v) if v is not None else None
     if ym:
         meses_cols.append((idx, ym))
 
@@ -218,8 +190,7 @@ for cod, p in planilha.items():
 base_map = {}
 _tb = os.path.join(BASE, "Tabela Base clientes distribuição.xlsx")
 if os.path.exists(_tb):
-    _tmpb = os.path.join(tempfile.gettempdir(), "_tabela_base_cli.xlsx")
-    shutil.copy2(_tb, _tmpb)
+    _tmpb = copiar_para_temp(_tb, "_tabela_base_cli.xlsx")
     wsb = openpyxl.load_workbook(_tmpb, data_only=True, read_only=True)["Sheet1"]
     for row in wsb.iter_rows(min_row=6, values_only=True):
         if row[2] and row[4] is not None:

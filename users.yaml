@@ -1,41 +1,41 @@
 users:
   cristiane:
     name: Cristiane
-    password: 650eb7a5aea66281b29ea282fd8d8fceaa88bb7d82b5e2618226c36393d6f2b3
+    password: scrypt$16384$8$1$a8d16996b5d3aa9f28920973ee598b6d$31fce570006872f847e1ad8b1ebf9bbe5381a7c46656017f4c23eab143faf41a
     role: vendedor
     vendor_filter: Cristiane La Maison Propetz
   emanuel:
     name: Emanuel
-    password: 565884a80224c9d9b0295b58fbf99a7a7d092a4ee8de9c0747ce923e15b7771e
+    password: scrypt$16384$8$1$832c7c35b53be8c9972627d15dd650d8$7a9654492b04804fe0f7f9ec5167a1426b6677bea6bb069a3da4f0d83623be56
     role: vendedor
     vendor_filter: Emanuel Propetz Distribuição
   grasiele:
     name: Grasiele
-    password: 9901aaa5e3d9942df4e12d59e084726fd13e9b128f10fa0c0d5f4ad75c0b18b1
+    password: scrypt$16384$8$1$77339c863b032a18a78c3c6224fcd3f5$19b58e3967ef898bc89e7eb9a857543e72bcaee3403982f1f5d97ffff093dfa9
     role: diretor
     vendor_filter: null
   jacson:
     name: Jacson
-    password: de6b32a7f32d29ed7ddccc093c33044ef04f196ba9e5b2f51158d2a563765262
+    password: scrypt$16384$8$1$820b5f8973283a1bba1b14e4054e7ecd$3d29d284fb5086ab0b5b59c898f760809cc2ccb9c41f15274498d4067a357daf
     role: garantia_master
     vendor_filter: null
   leonardo:
     name: Leonardo Daros
-    password: scrypt$16384$8$1$bfd5a93e3651b5a46b5750485a68107b$b030550bf7a3b926422a22257719c82f3ad6d2f8eb5d658e58e5f068969f5b3b
+    password: scrypt$16384$8$1$c4510c24b6ea91dbd65b3f60fa913f85$d695e4cdcf1c452acfac01147d1c7080e9ebbe8c00a18fda3f73b2e955b0da36
     role: admin
     vendor_filter: null
   marcos:
     name: Marcos
-    password: 2558a9f6df0969f99a158c25e8a344023d9ce6883ddc4076d828306adacd0671
+    password: scrypt$16384$8$1$45c2d39070def8f6c68431ce25a65e23$9c3e28a696996cc4c6b2b34017fbe53e901aadd82da44a26311d92f62a2524e3
     role: garantia
     vendor_filter: null
   pedro:
     name: Pedro
-    password: scrypt$16384$8$1$2eb7aebf3e4e040ba150e2d1a0892775$0d425509fec8cb30907c898f85ced80aeee410561899da2e6d3fab7710948b5e
+    password: scrypt$16384$8$1$a37d9fc67a7a990699a12c2e70e25165$4e6436b4a3f31fd5a69d84985f9d6e753b4eaafeadb239d9a63b3b6a6dbd7ddd
     role: garantia
     vendor_filter: null
   yasmin:
     name: Yasmin
-    password: 02f51ef20e92606dbbb74251c6711cdc4a6c193a58ebed926c3c456780bcdbf3
+    password: scrypt$16384$8$1$4ef84f32b7f603c3ebc7b93e0154f6e8$488207367724f24b07d54477694d8eccd69dfb82bed781c28ed03bac33c47953
     role: vendedor
     vendor_filter: Yasmin Propetz Distribuição

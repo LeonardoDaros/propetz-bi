@@ -6,6 +6,9 @@ import openpyxl
 import yaml
 import os
 import hashlib
+import hmac
+import html
+import secrets
 import json
 import base64
 import threading
@@ -153,44 +156,54 @@ def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
-    # Default users
-    return {
-        "users": {
-            "leonardo": {
-                "name": "Leonardo Daros",
-                "password": hash_password("propetz2026"),
-                "role": "admin",
-                "vendor_filter": None  # sees everything
-            },
-            "emanuel": {
-                "name": "Emanuel",
-                "password": hash_password("emanuel2026"),
-                "role": "vendedor",
-                "vendor_filter": "Emanuel Propetz Distribuição"
-            },
-            "yasmin": {
-                "name": "Yasmin",
-                "password": hash_password("yasmin2026"),
-                "role": "vendedor",
-                "vendor_filter": "Yasmin Propetz Distribuição"
-            },
-            "cristiane": {
-                "name": "Cristiane",
-                "password": hash_password("cristiane2026"),
-                "role": "vendedor",
-                "vendor_filter": "Cristiane La Maison Propetz"
-            },
-            "grasiele": {
-                "name": "Grasiele",
-                "password": hash_password("grasiele2026"),
-                "role": "diretor",
-                "vendor_filter": None
-            }
-        }
-    }
+    # BREAK-GLASS: só quando o users.yaml some E não dá p/ restaurar do state
+    # (não acontece em operação normal — users.yaml vem no clone + branch state).
+    # NENHUMA senha em texto puro no código (as antigas nome2026 vazaram). A
+    # senha do admin de emergência vem do secret BREAKGLASS_PASS; sem ele, o
+    # fallback é INUTILIZÁVEL (senha aleatória) — o app não trava, só exige o
+    # users.yaml real. Configure BREAKGLASS_PASS nos Secrets se quiser a rede.
+    try:
+        bg = st.secrets.get("BREAKGLASS_PASS", "")
+    except Exception:
+        bg = ""
+    senha = bg if bg else secrets.token_hex(24)  # sem secret → login impossível
+    return {"users": {"leonardo": {"name": "Leonardo Daros",
+                                   "password": hash_password(senha),
+                                   "role": "admin", "vendor_filter": None}}}
+
+# Hash de senha: scrypt (stdlib) com salt por usuário + key-stretching.
+# Formato: "scrypt$<n>$<r>$<p>$<salt_hex>$<hash_hex>". SHA-256 puro NUNCA mais
+# é gerado — só reconhecido para MIGRAR hashes antigos no próximo login.
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 16384, 8, 1
 
 def hash_password(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
+    salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(pwd.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R,
+                        p=_SCRYPT_P, dklen=32, maxmem=64 * 1024 * 1024)
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${dk.hex()}"
+
+def _verify_password(pwd, stored):
+    """Confere a senha em TEMPO CONSTANTE (hmac.compare_digest). Aceita o novo
+    formato scrypt e o legado sha256 (só para migração). NUNCA levanta exceção
+    (hash corrompido/None/não-ASCII → (False, False)). Retorna (ok, é_legado)."""
+    if pwd is None:
+        return False, False
+    stored = str(stored or "")
+    if stored.startswith("scrypt$"):
+        try:
+            _, n, r, p, salt_hex, h = stored.split("$")
+            dk = hashlib.scrypt(str(pwd).encode(), salt=bytes.fromhex(salt_hex),
+                                n=int(n), r=int(r), p=int(p), dklen=len(h) // 2,
+                                maxmem=64 * 1024 * 1024)
+            return hmac.compare_digest(dk.hex(), h), False
+        except Exception:
+            return False, False
+    # legado: sha256 puro (64 hex) — reconhecido só para re-hashear no login
+    try:
+        legacy = hashlib.sha256(str(pwd).encode()).hexdigest()
+        return hmac.compare_digest(legacy, stored), True
+    except Exception:
+        return False, False
 
 def save_users(users_data):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
@@ -200,70 +213,128 @@ def save_users(users_data):
 def verify_login(username, password):
     users = load_users()
     # Normaliza: celular capitaliza a 1ª letra e pode incluir espaço no autocomplete
-    user = users["users"].get(str(username).strip().lower())
-    if user and user["password"] == hash_password(password):
-        return user
-    return None
+    key = str(username).strip().lower()
+    user = users["users"].get(key)
+    if not user:
+        return None
+    ok, is_legacy = _verify_password(password, user.get("password", ""))
+    if not ok:
+        return None
+    if is_legacy:
+        # MIGRAÇÃO transparente: re-hasheia com scrypt no 1º login bem-sucedido
+        try:
+            users["users"][key]["password"] = hash_password(password)
+            save_users(users)
+        except Exception:
+            pass
+    return user
 
 # ============================================================
 # BRUTE FORCE PROTECTION
 # ============================================================
 LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(__file__), "login_attempts.json")
+_BF_MAX = 5          # falhas por USUÁRIO antes de bloquear
+_BF_MAX_IP = 30      # falhas por IP (mais alto: escritório inteiro é 1 IP via NAT)
+_BF_JANELA = 300     # segundos de bloqueio / janela de contagem
+_BF_LOCK = threading.Lock()
+_bf_ultimo_push = [0.0]   # debounce da publicação no state (anti-DoS)
+
+def _client_ip():
+    """IP do cliente atrás do proxy do Streamlit Cloud, se disponível. O
+    X-Forwarded-For é FORJÁVEL pelo cliente, então o limite por IP é só um
+    reforço (limiar alto) — a proteção real é a contagem por usuário."""
+    try:
+        xff = st.context.headers.get("X-Forwarded-For", "")
+        return xff.split(",")[0].strip() or None
+    except Exception:
+        return None
 
 def _load_login_attempts():
+    """Lê o arquivo LOCAL (caminho quente do login, SEM tocar o GitHub — evita
+    que uma enxurrada de logins falhos vire escrita/leitura remota = DoS). O
+    boot restaura este arquivo do branch state (_sync_state_from_github), então
+    o bloqueio sobrevive a reinícios; a publicação é assíncrona e com debounce."""
     if os.path.exists(LOGIN_ATTEMPTS_FILE):
         try:
-            with open(LOGIN_ATTEMPTS_FILE, 'r') as f:
-                return json.load(f)
+            with open(LOGIN_ATTEMPTS_FILE, "r") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
         except Exception:
             return {}
     return {}
 
-def _save_login_attempts(data):
-    with open(LOGIN_ATTEMPTS_FILE, 'w') as f:
-        json.dump(data, f)
+def _save_login_attempts_local(d):
+    try:
+        with open(LOGIN_ATTEMPTS_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
 
-def check_rate_limit(username):
-    """Returns (is_blocked, seconds_remaining). Blocks after 5 failed attempts for 5 minutes."""
+def _persist_attempts_debounced():
+    """Publica login_attempts no state NO MÁXIMO 1x/60s, assíncrono — sob
+    ataque de brute force isso limita a 1 escrita/min em vez de milhares."""
+    agora = datetime.now().timestamp()
+    if agora - _bf_ultimo_push[0] < 60:
+        return
+    _bf_ultimo_push[0] = agora
+    _push_state_file("login_attempts.json")  # já roda em thread, best-effort
+
+def _limite_da_chave(key):
+    return _BF_MAX_IP if key.startswith("ip:") else _BF_MAX
+
+def _bf_keys(username, ip):
+    """Chaves de contagem: uma por usuário e uma por IP (limita adivinhação
+    distribuída), com limiares diferentes (ver _limite_da_chave)."""
+    ks = [f"u:{str(username).lower().strip()}"]
+    if ip:
+        ks.append(f"ip:{ip}")
+    return ks
+
+def check_rate_limit(username, ip=None):
+    """(bloqueado, segundos_restantes). Bloqueia por USUÁRIO (>=5) ou por IP
+    (>=30). Leitura LOCAL — sem rede no caminho do login."""
+    if ip is None:
+        ip = _client_ip()
     attempts = _load_login_attempts()
-    key = username.lower().strip()
-    if key not in attempts:
-        return False, 0
-    info = attempts[key]
-    fail_count = info.get("count", 0)
-    last_fail = info.get("last_fail", 0)
     now = datetime.now().timestamp()
-    # Reset after 5 minutes
-    if now - last_fail > 300:
-        del attempts[key]
-        _save_login_attempts(attempts)
-        return False, 0
-    if fail_count >= 5:
-        remaining = int(300 - (now - last_fail))
-        return True, max(remaining, 0)
-    return False, 0
+    pior = 0
+    for key in _bf_keys(username, ip):
+        info = attempts.get(key)
+        if not info or now - info.get("last_fail", 0) > _BF_JANELA:
+            continue
+        if info.get("count", 0) >= _limite_da_chave(key):
+            pior = max(pior, int(_BF_JANELA - (now - info.get("last_fail", 0))))
+    return (pior > 0), max(pior, 0)
 
-def record_failed_attempt(username):
-    attempts = _load_login_attempts()
-    key = username.lower().strip()
+def record_failed_attempt(username, ip=None):
+    if ip is None:
+        ip = _client_ip()
     now = datetime.now().timestamp()
-    if key not in attempts:
-        attempts[key] = {"count": 1, "last_fail": now}
-    else:
-        # Reset if last attempt was over 5 min ago
-        if now - attempts[key].get("last_fail", 0) > 300:
-            attempts[key] = {"count": 1, "last_fail": now}
-        else:
-            attempts[key]["count"] = attempts[key].get("count", 0) + 1
-            attempts[key]["last_fail"] = now
-    _save_login_attempts(attempts)
+    keys = _bf_keys(username, ip)
+    with _BF_LOCK:
+        d = _load_login_attempts()
+        for key in keys:
+            info = d.get(key)
+            if not info or now - info.get("last_fail", 0) > _BF_JANELA:
+                d[key] = {"count": 1, "last_fail": now}
+            else:
+                d[key] = {"count": info.get("count", 0) + 1, "last_fail": now}
+        # higiene: descarta entradas velhas p/ o arquivo não crescer
+        d = {k: v for k, v in d.items()
+             if now - v.get("last_fail", 0) <= _BF_JANELA * 4}
+        _save_login_attempts_local(d)
+    _persist_attempts_debounced()
 
-def clear_failed_attempts(username):
-    attempts = _load_login_attempts()
-    key = username.lower().strip()
-    if key in attempts:
-        del attempts[key]
-        _save_login_attempts(attempts)
+def clear_failed_attempts(username, ip=None):
+    if ip is None:
+        ip = _client_ip()
+    keys = set(_bf_keys(username, ip))
+    with _BF_LOCK:
+        d = _load_login_attempts()
+        for k in keys:
+            d.pop(k, None)
+        _save_login_attempts_local(d)
+    _persist_attempts_debounced()
 
 # ============================================================
 # ACCESS LOG — registra QUEM entrou, QUANDO e quais PÁGINAS abriu (frequência de uso;
@@ -660,7 +731,7 @@ def _garantia_custo_total(g, custo_map):
 _GH_API = "https://api.github.com"
 _GH_REPO = "LeonardoDaros/propetz-bi"
 _GH_STATE_BRANCH = "state"
-_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json", "garantias.json"]
+_STATE_FILES = ["users.yaml", "inactive_clients.json", "access_log.json", "inactive_requests.json", "garantias.json", "login_attempts.json"]
 _GH_WRITE_LOCK = threading.Lock()  # serializa escritas de estado: evita corrida read-SHA/PUT entre threads
 
 def _gh_token():
@@ -996,6 +1067,22 @@ def _strip_stale_auth_params():
     except Exception:
         return False
 
+# Expiração de sessão: por INATIVIDADE (3h) e por TEMPO MÁXIMO de vida (12h).
+_SESSION_INATIVIDADE = 3 * 3600
+_SESSION_MAX = 12 * 3600
+
+def _touch_session():
+    """Marca início (1x) e última atividade (a cada rerun) da sessão."""
+    agora = datetime.now().timestamp()
+    st.session_state.setdefault("_login_ts", agora)
+    st.session_state["_last_seen"] = agora
+
+def _session_expired():
+    agora = datetime.now().timestamp()
+    ini = st.session_state.get("_login_ts", agora)
+    visto = st.session_state.get("_last_seen", agora)
+    return (agora - visto > _SESSION_INATIVIDADE) or (agora - ini > _SESSION_MAX)
+
 # ============================================================
 # AUTHENTICATION
 # ============================================================
@@ -1014,35 +1101,37 @@ def login_page():
 
     if submitted:
         username = str(username).strip().lower()
+        ip = _client_ip()
         if not username or not password:
             st.error("Preencha usuário e senha.")
         else:
-            # Check rate limit (brute force protection)
-            is_blocked, seconds_left = check_rate_limit(username)
+            # Proteção contra força bruta (por usuário E por IP, persistida)
+            is_blocked, seconds_left = check_rate_limit(username, ip)
             if is_blocked:
                 minutes = seconds_left // 60
                 secs = seconds_left % 60
-                st.error(f"🔒 Conta temporariamente bloqueada. Muitas tentativas incorretas. Tente novamente em {minutes}m{secs}s.")
+                st.error(f"🔒 Bloqueado por muitas tentativas incorretas. Tente novamente em {minutes}m{secs}s.")
             else:
                 user = verify_login(username, password)
                 if user:
-                    clear_failed_attempts(username)
+                    clear_failed_attempts(username, ip)
                     st.session_state["authenticated"] = True
                     st.session_state["username"] = username
                     st.session_state["user_name"] = user["name"]
                     st.session_state["role"] = user["role"]
                     st.session_state["vendor_filter"] = user.get("vendor_filter")
+                    _touch_session()
                     log_access(username, user["name"], "login")
                     st.rerun()
                 else:
-                    record_failed_attempt(username)
+                    record_failed_attempt(username, ip)
                     attempts = _load_login_attempts()
-                    key = username.lower().strip()
-                    remaining = 5 - attempts.get(key, {}).get("count", 0)
+                    info = attempts.get(f"u:{username}", {})
+                    remaining = _BF_MAX - info.get("count", 0)
                     if remaining > 0:
                         st.error(f"Usuário ou senha incorretos. ({remaining} tentativas restantes)")
                     else:
-                        st.error("🔒 Conta bloqueada por 5 minutos após muitas tentativas incorretas.")
+                        st.error(f"🔒 Conta bloqueada por {_BF_JANELA // 60} minutos após muitas tentativas incorretas.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1640,6 +1729,11 @@ def annual_value_estimate(monthly):
         return sum(hist) / len(hist) * 12
     return 0
 
+def esc(v):
+    """Escapa valor de origem EXTERNA (planilha, cadastro, nome de usuário)
+    antes de injetar em HTML via unsafe_allow_html — barra XSS."""
+    return html.escape(str(v if v is not None else ""))
+
 def risk_badge(risk):
     if risk == 'Recuperação':
         return '<span class="badge badge-red">Recuperação</span>'
@@ -1652,15 +1746,17 @@ def status_badge(status):
         return '<span class="badge badge-green">Ativo</span>'
     elif status == 'Inativo':
         return '<span class="badge badge-red">Inativo</span>'
-    return f'<span class="badge badge-blue">{status}</span>'
+    return f'<span class="badge badge-blue">{esc(status)}</span>'
 
 def insight_html(type_, label, text, action):
+    # label/text/action podem carregar dado externo (ex.: nome de vendedor) —
+    # escapados por segurança; são texto puro, então escapar não muda o visual.
     css_class = f"insight-{type_}" if type_ in ('danger','warning','success') else ''
     return f"""
     <div class="insight-card {css_class}">
-        <div class="insight-type">{label}</div>
-        <div class="insight-text">{text}</div>
-        <div class="insight-action">{action}</div>
+        <div class="insight-type">{esc(label)}</div>
+        <div class="insight-text">{esc(text)}</div>
+        <div class="insight-action">{esc(action)}</div>
     </div>
     """
 
@@ -4000,6 +4096,14 @@ def main():
     if not st.session_state.get("authenticated"):
         login_page()
         return
+    # Sessão expira por inatividade (3h) ou tempo máximo (12h) → novo login
+    if _session_expired():
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.warning("🔒 Sua sessão expirou por segurança. Faça login novamente.")
+        login_page()
+        return
+    _touch_session()
 
     # Load data
     result = load_data()
@@ -4075,7 +4179,7 @@ def main():
             <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
                         display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">{_role_icon}</div>
             <div>
-                <div style="font-weight:700;font-size:14px;line-height:1.2">{st.session_state['user_name']}</div>
+                <div style="font-weight:700;font-size:14px;line-height:1.2">{esc(st.session_state['user_name'])}</div>
                 <div style="font-size:11px;opacity:.6">{_role_label}</div>
             </div>
         </div>
@@ -4267,7 +4371,7 @@ def main():
                 <div class="sub">Painel Estratégico - Dashboard Comercial</div>
             </div>
             <div style="text-align:right;font-size:12px;opacity:.7">
-                <div>Dados: {months[0]} a {months[-1]}</div>
+                <div>Dados: {esc(months[0])} a {esc(months[-1])}</div>
                 <div>{len(df_clients)} clientes</div>
             </div>
         </div>

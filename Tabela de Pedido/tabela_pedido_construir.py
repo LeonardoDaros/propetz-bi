@@ -20,7 +20,11 @@ def _preco(v):
     return round(float(v) * FATOR, 2)
 
 SAIDA = os.path.join(BASE, f"Pedido Propetz Distribuição {MODALIDADE} - AGOSTO 2026.xlsx")
-SENHA = "propetz2026"
+# senha de proteção da planilha (Excel sheet-protection — cosmética/removível,
+# NÃO é segredo forte; só evita edição casual do distribuidor). Distinta da
+# senha de login (não reusar propetz2026). Default fica no código de propósito:
+# não protege nada sensível. P/ uma diferente, definir a env PEDIDO_SENHA.
+SENHA = os.environ.get("PEDIDO_SENHA", "propetz-pedido-dist")
 
 TEAL_ESCURO = "FF085041"
 TEAL = "FF0F6E56"

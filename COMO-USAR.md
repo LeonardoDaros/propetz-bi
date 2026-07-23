@@ -24,22 +24,41 @@ Com o GITHUB_TOKEN configurado (abaixo), o upload é salvo direto no GitHub e
 **fica permanente** — o app não perde mais os dados quando o servidor reinicia.
 Alternativa: salvar a planilha nesta pasta e rodar o `deploy.bat`.
 
-## GITHUB_TOKEN (persistência — configurar 1 vez)
+## GITHUB_TOKEN (persistência — configurar 1 vez, com escopo MÍNIMO)
 
 O disco do Streamlit Cloud é temporário: sem o token, uploads, usuários novos,
 clientes inativados e o log de acessos são perdidos a cada reinício do servidor.
 
-1. Crie um token em https://github.com/settings/tokens → "Generate new token (classic)",
-   marque a permissão **repo**, sem expiração (ou renove quando expirar).
-2. Acesse https://share.streamlit.io → app **propetz-bi** → ⋮ → **Settings** → **Secrets**.
-3. Cole (com as aspas) e salve:
+⚠️ Use um token **fine-grained** restrito a ESTE repositório (não um clássico com
+`repo` inteiro, que dá escrita em toda a sua conta). Passo a passo para
+**rotacionar** o token atual por um seguro:
+
+1. https://github.com/settings/tokens → aba **Fine-grained tokens** →
+   **Generate new token**.
+2. **Expiration**: defina uma data (ex.: 90 dias — anote para renovar).
+3. **Resource owner**: sua conta. **Repository access**: *Only select
+   repositories* → escolha **apenas** `propetz-bi`.
+4. **Permissions** → *Repository permissions* → **Contents: Read and write**
+   (só isso; deixe todo o resto em *No access*).
+5. **Generate** e copie o token (começa com `github_pat_`).
+6. https://share.streamlit.io → app **propetz-bi** → ⋮ → **Settings** →
+   **Secrets** → substitua o valor:
 
    ```
-   GITHUB_TOKEN = "ghp_seu_token_aqui"
+   GITHUB_TOKEN = "github_pat_seu_token_aqui"
    ```
 
-4. O app reinicia sozinho. Pronto: estado salvo no branch `state` do repo,
-   planilha salva no branch `main`.
+7. Salve. O app reinicia sozinho e passa a usar o token novo.
+8. Volte em https://github.com/settings/tokens e **revogue o token antigo**
+   (o clássico com escopo `repo`).
+
+Estado salvo no branch `state`, planilha no `main`. Renove o token antes da
+data de expiração (o app avisa se a persistência parar de funcionar).
+
+Opcional — `BREAKGLASS_PASS`: se quiser uma senha de admin de emergência para o
+caso (raro) do `users.yaml` sumir, adicione nos Secrets
+`BREAKGLASS_PASS = "uma-senha-forte"`. Sem ela, o acesso de emergência fica
+desativado (mais seguro).
 
 ⚠️ Com o token ativo, gerencie usuários/senhas **pelo app** (página Admin), não
 editando o `users.yaml` local — a versão do app tem prioridade no boot.

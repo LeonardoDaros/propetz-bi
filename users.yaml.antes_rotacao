@@ -1,0 +1,41 @@
+users:
+  cristiane:
+    name: Cristiane
+    password: 650eb7a5aea66281b29ea282fd8d8fceaa88bb7d82b5e2618226c36393d6f2b3
+    role: vendedor
+    vendor_filter: Cristiane La Maison Propetz
+  emanuel:
+    name: Emanuel
+    password: 565884a80224c9d9b0295b58fbf99a7a7d092a4ee8de9c0747ce923e15b7771e
+    role: vendedor
+    vendor_filter: Emanuel Propetz Distribuição
+  leonardo:
+    name: Leonardo Daros
+    password: 287c120be89d0680068d4315d918c6961d1d417acb0db3b804e014cd86578564
+    role: admin
+    vendor_filter: null
+  grasiele:
+    name: Grasiele
+    password: 9901aaa5e3d9942df4e12d59e084726fd13e9b128f10fa0c0d5f4ad75c0b18b1
+    role: diretor
+    vendor_filter: null
+  yasmin:
+    name: Yasmin
+    password: 02f51ef20e92606dbbb74251c6711cdc4a6c193a58ebed926c3c456780bcdbf3
+    role: vendedor
+    vendor_filter: Yasmin Propetz Distribuição
+  marcos:
+    name: Marcos
+    password: 2558a9f6df0969f99a158c25e8a344023d9ce6883ddc4076d828306adacd0671
+    role: garantia
+    vendor_filter: null
+  pedro:
+    name: Pedro
+    password: 186c28eb4e6e7ebfabc96fee3b7d638ae5c5bff9761eba2bf939aa8fb1f9d9c5
+    role: garantia
+    vendor_filter: null
+  jacson:
+    name: Jacson
+    password: de6b32a7f32d29ed7ddccc093c33044ef04f196ba9e5b2f51158d2a563765262
+    role: garantia_master
+    vendor_filter: null

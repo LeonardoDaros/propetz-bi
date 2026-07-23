@@ -750,6 +750,28 @@ def _gh_token():
 def _gh_headers(token):
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
+# Validade do token, capturada de GRAÇA do header que o GitHub devolve em toda
+# resposta (github-authentication-token-expiration) — evita depender da memória
+# do Leonardo p/ renovar antes de vencer.
+_TOKEN_EXPIRA = [None]
+
+def _registra_validade_token(resp):
+    try:
+        v = resp.headers.get("github-authentication-token-expiration")
+        if v:
+            _TOKEN_EXPIRA[0] = str(v)[:10]  # "AAAA-MM-DD"
+    except Exception:
+        pass
+
+def _dias_p_expirar_token():
+    """Dias até o token expirar (None se desconhecido ou sem validade)."""
+    if not _TOKEN_EXPIRA[0]:
+        return None
+    try:
+        return (datetime.strptime(_TOKEN_EXPIRA[0], "%Y-%m-%d").date() - date.today()).days
+    except Exception:
+        return None
+
 def _gh_get_file(path, branch, token=None, so_sha=False):
     """Lê um arquivo do repo. Retorna (bytes, sha) ou (None, None).
     Arquivos de 1 a 100 MB: a API contents responde 200 com content=\"\" e
@@ -764,6 +786,7 @@ def _gh_get_file(path, branch, token=None, so_sha=False):
         url = f"{_GH_API}/repos/{_GH_REPO}/contents/{path}"
         r = requests.get(url, params={"ref": branch},
                          headers=_gh_headers(token), timeout=15)
+        _registra_validade_token(r)   # de graça: header da própria resposta
         if r.status_code == 200:
             data = r.json()
             if data.get("encoding") == "none":
@@ -978,10 +1001,15 @@ def _gh_diagnose():
                     "GitHub recusou (401): token inválido, expirado ou copiado pela metade. "
                     "Gere um novo em github.com/settings/tokens e cole de novo."))
         return out
-    if r.status_code != 200:
-        out.append((False, "Token válido", f"Resposta inesperada {r.status_code}: {r.text[:120]}"))
-        return out
-    out.append((True, "Token válido", f"Autenticado como '{r.json().get('login', '?')}'."))
+    if r.status_code == 200:
+        out.append((True, "Token válido", f"Autenticado como '{r.json().get('login', '?')}'."))
+    else:
+        # Token FINE-GRAINED pode não responder /user (sem permissão de conta) e
+        # mesmo assim gravar normalmente. NÃO é motivo para parar: o que vale é
+        # o teste de escrita lá embaixo.
+        out.append((True, "Token válido",
+                    f"O GitHub não identificou a conta por aqui (HTTP {r.status_code}) — normal "
+                    "em token fine-grained. Vale o teste de escrita abaixo."))
     # 3) Acesso ao repositório
     r = requests.get(f"{_GH_API}/repos/{_GH_REPO}", headers=_gh_headers(token), timeout=15)
     if r.status_code == 404:
@@ -991,7 +1019,9 @@ def _gh_diagnose():
                     "Contents: Read and write."))
         return out
     if r.status_code == 403:
-        out.append((False, "Acesso ao repositório", "Proibido (403): falta o escopo 'repo' no token."))
+        out.append((False, "Acesso ao repositório",
+                    "Proibido (403): no token clássico falta o escopo 'repo'; no fine-grained, "
+                    "confira se ESTE repositório está selecionado e com Contents: Read and write."))
         return out
     if r.status_code != 200:
         out.append((False, "Acesso ao repositório", f"Resposta {r.status_code}: {r.text[:120]}"))
@@ -1016,10 +1046,14 @@ def _gh_diagnose():
         rw = requests.put(f"{_GH_API}/repos/{_GH_REPO}/contents/_diagnostico.txt",
                           json=payload, headers=_gh_headers(token), timeout=30)
         if rw.status_code in (200, 201):
+            _registra_validade_token(rw)
+            _d = _dias_p_expirar_token()
+            _val = (f" Validade do token: {_TOKEN_EXPIRA[0]} ({_d} dias)." if _d is not None
+                    else " (Este token não informa data de expiração.)")
             out.append((True, "Escrita de teste (branch 'state')",
                         "Gravado com sucesso. ✅ A persistência de inativações, usuários e log "
                         "de acesso está FUNCIONANDO. (A planilha é salva no branch 'main' com o "
-                        "mesmo token e deve funcionar igual.)"))
+                        "mesmo token e deve funcionar igual.)" + _val))
         else:
             out.append((False, "Escrita de teste (branch 'state')",
                         f"O token é válido e enxerga o repo, mas a GRAVAÇÃO falhou: "
@@ -4388,6 +4422,18 @@ def main():
             "Streamlit Cloud (passo a passo no COMO-USAR.md). Enquanto isso não for feito, evite "
             "depender das inativações."
         )
+    elif has_full_data_access():
+        # Aviso ANTES de vencer: o token tem validade e, se expirar sem troca,
+        # o app para de salvar. A data vem de graça do header do GitHub.
+        _dias = _dias_p_expirar_token()
+        if _dias is not None and _dias <= 30:
+            _txt = (f"expira em **{_dias} dia(s)** ({_TOKEN_EXPIRA[0]})" if _dias > 0
+                    else f"**EXPIROU** em {_TOKEN_EXPIRA[0]}")
+            st.warning(
+                f"🔑 **O token do GitHub {_txt}.** Quando vencer, o app PARA de salvar "
+                "inativações, garantias e log. Gere um novo token fine-grained e troque nos "
+                "Secrets do Streamlit (passo a passo no COMO-USAR.md)."
+            )
 
     # Route to page
     page = pages[selected_page]

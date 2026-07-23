@@ -31,7 +31,7 @@ users:
     vendor_filter: null
   pedro:
     name: Pedro
-    password: 186c28eb4e6e7ebfabc96fee3b7d638ae5c5bff9761eba2bf939aa8fb1f9d9c5
+    password: scrypt$16384$8$1$2eb7aebf3e4e040ba150e2d1a0892775$0d425509fec8cb30907c898f85ced80aeee410561899da2e6d3fab7710948b5e
     role: garantia
     vendor_filter: null
   yasmin:

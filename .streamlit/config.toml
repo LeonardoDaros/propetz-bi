@@ -7,3 +7,10 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 50
+
+[client]
+# Esconde a barra de topo do Streamlit (link do GitHub, botão Deploy, lápis de
+# editar) para todos os visitantes. É higiene: reduz o que aparece na tela/print
+# e some com o atalho pro repo. NÃO é o que protege as credenciais — isso já é
+# feito pelo repo privado + token nos Secrets (nunca no código nem no cliente).
+toolbarMode = "minimal"

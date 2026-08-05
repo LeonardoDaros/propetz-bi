@@ -1934,7 +1934,7 @@ def page_garantias(products_df, df_clients):
         if _fld:
             st.success(_fld)
         cb1, cb2, cb3 = st.columns([2, 1, 1])
-        busca = cb1.text_input("🔍 Buscar (id, cliente, produto, NF, empresa)", key="gar_busca")
+        busca = cb1.text_input("🔍 Buscar (id, cliente, cliente final, produto, NF, empresa)", key="gar_busca")
         dt_de = cb2.date_input("Registradas DE", value=None, format="DD/MM/YYYY", key="gar_dtde")
         dt_ate = cb3.date_input("ATÉ", value=None, format="DD/MM/YYYY", key="gar_dtate")
 
@@ -1943,8 +1943,8 @@ def page_garantias(products_df, df_clients):
             if busca.strip():
                 s = busca.strip().lower()
                 out = [g for g in out if any(s in str(g.get(k, "")).lower() for k in
-                       ("id", "cliente", "produto_nome", "produto_sku", "empresa_nf",
-                        "nf_entrada", "nf_saida"))]
+                       ("id", "cliente", "cliente_final", "produto_nome", "produto_sku",
+                        "empresa_nf", "nf_entrada", "nf_saida", "cliente_final_nf"))]
             if dt_de or dt_ate:
                 def _dreg(g):
                     try:
@@ -2403,9 +2403,14 @@ def page_manager(df, months, df_sku, products_df):
 
     # ---- LINHA 2: DESEMPENHO POR VENDEDOR ----
     st.subheader("👥 Desempenho por Vendedor")
-    st.caption(f"Mês de referência: {months[-1]}. Tendência = mês atual vs média dos 3 meses anteriores.")
+    st.caption(f"Mês de referência: {months[-1]}. Tendência = mês atual vs média dos 3 meses anteriores. "
+               "Carteira = clientes ATIVOS (inativados ficam fora da conta).")
+    # carteira ativa: mesmo recorte do quadro de recuperações logo abaixo —
+    # sem isso, cliente inativado seguia inflando o nº de clientes do vendedor
+    _df_cart = df[(df['status'] == 'Ativo')
+                  & ~df['id'].astype(str).str.strip().isin(load_inactive_clients())]
     rows = []
-    for v, g in df.groupby('vendor'):
+    for v, g in _df_cart.groupby('vendor'):
         if not v:
             continue
         rev_m = g['monthly'].apply(lambda m: m[-1] if len(m) >= 1 else 0).sum()
@@ -2894,9 +2899,12 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
 
     # --- KPIs ---
     period_rev = filtered['monthly'].apply(period_sum).sum()
-    n_active = len(filtered[filtered['status'] == 'Ativo'])
-    n_inactive = len(filtered[filtered['status'] == 'Inativo'])
-    n_risk = len(filtered[filtered['risk'].isin(['Recuperação', 'Atenção'])])
+    # status EFETIVO: inativado pelo app conta como Inativo, mesmo que a planilha
+    # ainda diga Ativo (a planilha envelhece entre uploads; o app é a verdade)
+    _inat_app = filtered['id'].astype(str).str.strip().isin(load_inactive_clients())
+    n_active = len(filtered[(filtered['status'] == 'Ativo') & ~_inat_app])
+    n_inactive = len(filtered[(filtered['status'] == 'Inativo') | _inat_app])
+    n_risk = len(filtered[filtered['risk'].isin(['Recuperação', 'Atenção']) & ~_inat_app])
 
     # Buyers in period = clients with any revenue > 0 in selected months
     period_buyers = len(filtered[filtered['monthly'].apply(

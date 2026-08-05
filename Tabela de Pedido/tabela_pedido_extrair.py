@@ -18,6 +18,15 @@ OUT = os.path.join(BASE, "_modelo_tabela.json")
 NOVOS = (r"C:\Users\leoda\OneDrive\Área de Trabalho\Dcorp\ATUALIZAR MES A MES"
          r"\Tabela de Preço\Novos valores distribuicao (1).xlsx")
 ABA_MES = "Ago-26"
+# REGRA 03/08/2026 (Leonardo): estoque zerado no mestre NÃO retira produto da
+# tabela — item em linha com reposição a caminho segue vendável; os zerados
+# saem LISTADOS no resumo para serem questionados. Retirar exige decisão humana
+# registrada aqui (com data). Estoque com saldo segue revivendo item marcado
+# vermelho na FOB antiga (a marca manual envelhece).
+# Vazio desde 03/08/2026: as 2 Dedeiras (ASP-AZP*/ASP-AZPF*) foram liberadas
+# pelo Leonardo no mesmo dia (produto em linha, reposição a caminho).
+# Retirar produto = adicionar o SKU aqui com data e motivo em comentário.
+RETIRADOS = set()
 
 sys.path.insert(0, RAIZ)
 from util_comum import abrir_ou_copiar, copiar_para_temp  # reuso (regra global nº 6)
@@ -202,6 +211,40 @@ for item in produtos:
     item["qtd_min"] = _lista_pos[0] if _lista_pos else (item["multiplo"] or 1)
     item["regra_qtd"] = _regra_da_categoria(item["categoria"])
 
+# ---- NOVOS produtos ainda fora do formulário FOB antigo (decisão Leonardo
+# 03/08/2026): entram espelhando a ESTRUTURA (categoria, múltiplo, listas) do
+# item de referência "apos"; preço/IPI/estoque/site vêm do mestre mensal como
+# os demais. Barras fica vazio até a FOB nova trazer o código (mesmo precedente
+# da troca de variante). Quando o SKU aparecer na FOB nova, a entrada daqui é
+# ignorada de propósito (o formulário vence). ----
+ADICIONAR = [
+    {"sku": "MP6-4CAP-200", "apos": "MP6-4CAP-100",
+     "nome": "Máquina de tosa MO4 Propetz ROSA, Lâmina de Cerâmica, Bivolt"},
+    {"sku": "SMP-PP1-100", "apos": "SMP-XA1-100",
+     "nome": "Suporte de Mesa Rotativo Linha Premium Propetz LANÇAMENTO"},
+    # 05/08/2026 — lâmina da MO4 e dedeiras coloridas (Borracha, cadastro Leonardo)
+    {"sku": "L2PMO4-100", "apos": "L2PMO3-100",
+     "nome": "Lâmina de Tosa MO4 Propetz"},
+    {"sku": "ASP-PRP-100", "apos": "ASP-AZP-100",
+     "nome": "Dedeira de Borracha para Tesoura Aberta, Preta, Propetz"},
+    {"sku": "ASP-ROP-100", "apos": "ASP-PRP-100",
+     "nome": "Dedeira de Borracha para Tesoura Aberta, Rosa, Propetz"},
+    {"sku": "ASP-PRPF-100", "apos": "ASP-AZPF-100",
+     "nome": "Dedeira de Borracha para Tesoura Fechada, Preta, Propetz"},
+    {"sku": "ASP-ROPF-100", "apos": "ASP-PRPF-100",
+     "nome": "Dedeira de Borracha para Tesoura Fechada, Rosa, Propetz"},
+]
+for ad in ADICIONAR:
+    if any(p["sku"] == ad["sku"] for p in produtos):
+        continue  # já veio da FOB nova — o formulário vence
+    ref = next((p for p in produtos if p["sku"] == ad["apos"]), None)
+    if ref is None:
+        print(f"AVISO: referência {ad['apos']} não achada — {ad['sku']} NÃO adicionado")
+        continue
+    novo = {**ref, "sku": ad["sku"], "nome": ad["nome"], "barras": "",
+            "sem_estoque": True}  # o mestre decide na etapa seguinte (sem preço lá = fora)
+    produtos.insert(produtos.index(ref) + 1, novo)
+
 # ---- quantidade mínima por modelo (linhas ocultas 212-222: D=modelo, E=qtd) ----
 minimos = []
 for r in range(212, 223):
@@ -239,9 +282,11 @@ for it in produtos:
         it["estoque"] = nv["estoque"]
         it["site_propetz"] = nv.get("site")  # base do Seu Lucro (regra 22/07)
         if nv["estoque"] is not None:
-            # o estoque do MESTRE manda nos 2 sentidos: zera -> sai do pedido;
-            # tem estoque -> volta (a marca vermelha manual da FOB antiga envelhece)
-            it["sem_estoque"] = nv["estoque"] <= 0
+            # presente no mestre mensal = produto em linha, vendável (regra
+            # 03/08: zerado não sai sozinho; com saldo, revive marca vermelha)
+            it["sem_estoque"] = False
+    if it["sku"] in RETIRADOS:
+        it["sem_estoque"] = True
     if not it["sem_estoque"]:
         # item à venda não pode carregar sufixo herdado do formulário antigo
         for suf in ("(SEM ESTOQUE)", "( SEM ESTOQUE )", "(ESGOTADO)"):
@@ -302,10 +347,18 @@ for it in produtos:
         abaixo_custo.append({"sku": it["sku"], "nome": it["nome"], "custo": round(c, 2),
                              "tabela": it["preco_tabela"], "vigente": round(vigente, 2)})
 
+# resumo fiel ao estado FINAL: a lista semeada da marca vermelha da FOB antiga
+# envelhece depois do mestre e das decisões registradas
+sem_estoque = [p["sku"] for p in produtos if p["sem_estoque"]]
+zerados_mantidos = sorted(p["sku"] for p in produtos
+                          if not p["sem_estoque"]
+                          and p.get("estoque") is not None and p["estoque"] <= 0)
+
 modelo = {"vigencia": "Agosto/2026", "produtos": produtos,
           "promos_reais": promos_reais, "promos_descartadas": promos_lixo,
           "minimos": minimos, "sugeridos": sugeridos,
           "sem_estoque": sem_estoque, "abaixo_custo": abaixo_custo,
+          "zerados_mantidos": zerados_mantidos, "retirados_decisao": sorted(RETIRADOS),
           "trocas_variante": trocas_variante, "precos_antigos_mantidos": mantidos_antigos}
 json.dump(modelo, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
@@ -316,6 +369,11 @@ for p in produtos:
 print(f"produtos: {len(produtos)} | categorias: {len(cats)} | promos REAIS: {len(promos_reais)} "
       f"| promos descartadas: {len(promos_lixo)} | sem estoque: {len(sem_estoque)} "
       f"| sugeridos: {len(sugeridos)} | abaixo do custo: {len(abaixo_custo)}")
+if zerados_mantidos:
+    print(f"ESTOQUE ZERADO no mestre — MANTIDOS na tabela (regra 03/08: retirar "
+          f"exige decisão do Leonardo): {zerados_mantidos}")
+if RETIRADOS:
+    print(f"RETIRADOS por decisão registrada (ver comentário em RETIRADOS): {sorted(RETIRADOS)}")
 print("\nPROMOS REAIS:")
 for sku, p in sorted(promos_reais.items(), key=lambda x: -x[1]["desc_pct"]):
     nome = next((i["nome"] for i in produtos if i["sku"] == sku), nomes_p2.get(sku, "?"))

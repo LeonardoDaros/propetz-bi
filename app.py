@@ -4335,8 +4335,13 @@ def main():
         st.markdown("---")
 
         # --- Data summary ---
-        _total_clients = len(df_clients)
-        _risk_counts = df_clients['risk'].value_counts() if 'risk' in df_clients.columns else {}
+        # status EFETIVO (mesmo recorte do gestor/overview): ativo = 'Ativo' na
+        # planilha E fora dos inativados do app; saúde calculada SÓ nos ativos
+        _inat_card = df_clients['id'].astype(str).str.strip().isin(load_inactive_clients())
+        _df_card = df_clients[(df_clients['status'] == 'Ativo') & ~_inat_card]
+        _n_ativos = len(_df_card)
+        _n_inativos = len(df_clients) - _n_ativos
+        _risk_counts = _df_card['risk'].value_counts() if 'risk' in _df_card.columns else {}
         _healthy = _risk_counts.get('Saudável', 0)
         _attention = _risk_counts.get('Atenção', 0)
         _recovery = _risk_counts.get('Recuperação', 0)
@@ -4344,8 +4349,12 @@ def main():
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
             <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
-                <div style="font-size:18px;font-weight:800;color:#FF6B35">{_total_clients}</div>
-                <div style="font-size:10px;opacity:.5">Clientes</div>
+                <div style="font-size:18px;font-weight:800;color:#FF6B35">{_n_ativos}</div>
+                <div style="font-size:10px;opacity:.5">Clientes Ativos</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+                <div style="font-size:18px;font-weight:800;color:#9E9E9E">{_n_inativos}</div>
+                <div style="font-size:10px;opacity:.5">Inativos</div>
             </div>
             <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
                 <div style="font-size:18px;font-weight:800;color:#4CAF50">{_healthy}</div>
@@ -4355,7 +4364,7 @@ def main():
                 <div style="font-size:18px;font-weight:800;color:#FFC107">{_attention}</div>
                 <div style="font-size:10px;opacity:.5">Atenção</div>
             </div>
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center;grid-column:1/-1">
                 <div style="font-size:18px;font-weight:800;color:#F44336">{_recovery}</div>
                 <div style="font-size:10px;opacity:.5">Recuperação</div>
             </div>

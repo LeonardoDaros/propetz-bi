@@ -53,6 +53,31 @@ def norm_cliente(nome):
     return " ".join(toks)
 
 
+# Unificação de carteiras de vendedores — FONTE ÚNICA (app e coletores
+# importam daqui; mudou carteira? editar SÓ este dicionário).
+VENDOR_MERGE = {
+    "Ellen Propetz Distribuição": "Emanuel Propetz Distribuição",
+}
+# o banco silver usa nomes completos próprios; o casamento entre fontes é pelo
+# 1º nome (critério da sombra) — o merge também precisa valer nesse plano
+VENDOR_MERGE_1O_NOME = {k.split(" ")[0].lower(): v.split(" ")[0].lower()
+                        for k, v in VENDOR_MERGE.items()}
+
+
+def normalize_vendor(name):
+    """Normaliza nome do vendedor aplicando o mapeamento de carteiras."""
+    if not name:
+        return ""
+    name = str(name).strip()
+    return VENDOR_MERGE.get(name, name)
+
+
+def primeiro_nome_vendedor(name):
+    """1º nome minúsculo, já com o merge de carteiras aplicado."""
+    pn = str(name or "").strip().split(" ")[0].lower()
+    return VENDOR_MERGE_1O_NOME.get(pn, pn)
+
+
 def copiar_para_temp(caminho, apelido):
     """Copia p/ %TEMP% e devolve o caminho da cópia — leitura segura de
     planilha aberta no Excel/OneDrive (que trava a leitura direta)."""

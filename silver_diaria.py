@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""ROTINA DIÁRIA do banco silver — agendada no PC do Leonardo (07:30).
+"""ROTINA HORÁRIA do banco silver — agendada no PC do Leonardo.
 
-Todo dia: (1) roda a sombra do churn (silver_churn_sombra.py), que consulta o
-banco, regenera o Relatorio_Sombra_Churn.md (auditoria permanente) e produz o
-silver_distribuicao.json; (2) publica o json no branch `state` do repo pelo
-método seguro deste projeto (clone raso em %TEMP% — NUNCA git worktree, regra
-do CLAUDE.md); (3) registra tudo em silver_diaria.log.
-
-O app AINDA NÃO lê o json (Fase 2, após auditoria + aval do Leonardo) — esta
-rotina só mantém o dado fresco e a sombra vigiando. Falhou? Loga e tenta de
-novo amanhã; nada quebra.
+A cada rodada: (1) roda a sombra do churn (silver_churn_sombra.py), que gera o
+silver_distribuicao.json (Fase 2: o app LÊ este json — última compra real);
+(1b) roda o silver_mes_vivo.py (página "Mês ao Vivo": receita do mês corrente
++ metas), em MELHOR ESFORÇO — falha aqui não cancela o churn; (2) publica os
+DOIS jsons num só commit no branch `state` pelo método seguro do projeto
+(clone raso em %TEMP% — NUNCA git worktree, regra do CLAUDE.md); (3) registra
+tudo em silver_diaria.log. DESLIGAR esta rotina congela o churn E o Mês ao
+Vivo do app online.
 """
 import os
 import shutil
@@ -21,6 +20,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 LOG = os.path.join(BASE, "silver_diaria.log")
 JSON_APP = os.path.join(BASE, "silver_distribuicao.json")
+JSON_MV = os.path.join(BASE, "silver_mes_vivo.json")
 # pasta de clone ÚNICA por execução (instâncias simultâneas não colidem);
 # órfãs de execuções antigas são varridas no início, melhor esforço
 CLONE_PREFIXO = os.path.join(os.environ.get("TEMP", "."), "_propetz_state_push")
@@ -106,6 +106,20 @@ def main():
         log("FALHA na sombra após 3 tentativas — publicação cancelada nesta rodada.")
         return 1
 
+    # 1b. mês ao vivo (página do app) — MELHOR ESFORÇO de verdade: NENHUMA
+    # exceção daqui (nem TimeoutExpired) pode cancelar a publicação do churn
+    try:
+        rc_mv, out_mv = run([PY, os.path.join(BASE, "silver_mes_vivo.py")],
+                            cwd=BASE, timeout=900)
+    except Exception as e:
+        rc_mv, out_mv = 1, f"{type(e).__name__}: {e}"
+    if rc_mv == 0:
+        for linha in out_mv.strip().splitlines()[-1:]:
+            log(f"  mes-vivo: {linha[:200]}")
+    else:
+        log(f"mes-vivo FALHOU (rc={rc_mv}) — publico só o churn nesta rodada: "
+            f"{out_mv.strip().splitlines()[-1][:160] if out_mv.strip() else '?'}")
+
     # 2. publica no branch state (clone raso -> copia -> commit -> push c/ rebase)
     rc, remote = run(["git", "-C", BASE, "remote", "get-url", "origin"])
     remote = remote.strip()
@@ -121,7 +135,11 @@ def main():
         log(f"FALHA no clone do branch state: {out.strip()[:200]}")
         return 1
     shutil.copy2(JSON_APP, os.path.join(CLONE, "silver_distribuicao.json"))
-    rc, out = run(["git", "-C", CLONE, "add", "silver_distribuicao.json"])
+    arquivos = ["silver_distribuicao.json"]
+    if rc_mv == 0 and os.path.exists(JSON_MV):
+        shutil.copy2(JSON_MV, os.path.join(CLONE, "silver_mes_vivo.json"))
+        arquivos.append("silver_mes_vivo.json")
+    rc, out = run(["git", "-C", CLONE, "add", *arquivos])
     if rc != 0:
         log(f"FALHA no git add (rc={rc}): {out.strip()[:200]}")
         limpar_clone()

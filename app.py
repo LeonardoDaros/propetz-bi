@@ -8,6 +8,7 @@ import os
 import hashlib
 import hmac
 import html
+import math
 import secrets
 import json
 import base64
@@ -690,6 +691,15 @@ def load_silver_distribuicao():
     data = _read_state_json("silver_distribuicao.json", SILVER_DIST_FILE, {})
     return data if isinstance(data, dict) else {}
 
+SILVER_MES_VIVO_FILE = os.path.join(os.path.dirname(__file__), "silver_mes_vivo.json")
+
+def load_silver_mes_vivo():
+    """Página Mês ao Vivo: receita do mês corrente do canal Distribuição, direto
+    do banco silver, publicada de hora em hora no branch state pela rotina local
+    (silver_mes_vivo.py). Sem arquivo/token → {} e a página avisa, sem quebrar."""
+    data = _read_state_json("silver_mes_vivo.json", SILVER_MES_VIVO_FILE, {})
+    return data if isinstance(data, dict) else {}
+
 from util_comum import parse_label_ym as _parse_label_ym  # reuso (regra global nº 6)
 
 def _rotulo_outro(valor, detalhe):
@@ -1286,17 +1296,9 @@ def apply_abc_by_value(products):
         p['abc'] = 'A' if cum <= 0.80 * total_val else ('B' if cum <= 0.95 * total_val else 'C')
     return products
 
-# Mapeamento de vendedores (unificação de carteiras)
-VENDOR_MERGE = {
-    "Ellen Propetz Distribuição": "Emanuel Propetz Distribuição",
-}
-
-def normalize_vendor(name):
-    """Normaliza nome do vendedor aplicando mapeamento de carteiras."""
-    if not name:
-        return ''
-    name = str(name).strip()
-    return VENDOR_MERGE.get(name, name)
+# Mapeamento de vendedores (unificação de carteiras) — fonte única no
+# util_comum (o coletor do Mês ao Vivo usa o MESMO mapa; editar lá)
+from util_comum import VENDOR_MERGE, normalize_vendor  # noqa: F401
 
 def process_excel(xlsx_path):
     """Process the Excel file and return structured data."""
@@ -2352,6 +2354,178 @@ def page_garantias(products_df, df_clients):
 # ============================================================
 # PAGE: PAINEL DO GESTOR (tela inicial do admin/diretor)
 # ============================================================
+def _mv_num(v, dflt=0.0):
+    """float à prova de json corrompido (blindagem obrigatória da Fase 2).
+    Rejeita NaN/Infinity — json.load os aceita e st.progress/format estouram."""
+    try:
+        v = float(v)
+        return v if math.isfinite(v) else dflt
+    except (TypeError, ValueError):
+        return dflt
+
+
+def _mv_int(v, dflt=0):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return dflt
+
+
+def _mes_vivo_bloco_vendedor(v, dia, dias_mes, mes_ant_nome):
+    """Bloco de um vendedor na página Mês ao Vivo: progresso vs meta + ritmo."""
+    nome = str(v.get("nome", "?")).replace(" Propetz Distribuição", "") \
+                                  .replace(" La Maison Propetz", "")
+    receita = _mv_num(v.get("receita"))
+    meta = _mv_num(v.get("meta"))
+    proj = receita / max(dia, 1) * dias_mes
+    if meta > 0:
+        pct = receita / meta
+        st.markdown(f"**{nome}** — {fmt_brl(receita)} de {fmt_brl(meta)} "
+                    f"(**{pct * 100:.0f}%** da meta) · projeção {fmt_brl(proj)} "
+                    f"({proj / meta * 100:.0f}% da meta)")
+        st.progress(max(0.0, min(pct, 1.0)))
+        desb = _mv_num(v.get("meta_desbloqueio"))
+        extra = []
+        if desb > 0:
+            extra.append("🔓 comissão desbloqueada" if receita >= desb else
+                         f"desbloqueio da comissão: {fmt_brl(desb)} "
+                         f"(faltam {fmt_brl(desb - receita)})")
+    else:
+        st.markdown(f"**{nome}** — {fmt_brl(receita)} *(sem meta cadastrada)*")
+        extra = []
+    extra.append(f"{_mv_int(v.get('notas'))} nota(s) · "
+                 f"{_mv_int(v.get('clientes'))} cliente(s)")
+    ant_ate = _mv_num(v.get("anterior_ate_dia"))
+    if ant_ate > 0 and mes_ant_nome:
+        extra.append(f"vs mesmo dia de {mes_ant_nome}: "
+                     f"{(receita / ant_ate - 1) * 100:+.0f}%")
+    st.caption(" · ".join(extra))
+
+
+def _mes_vivo_tabela_clientes(top):
+    dt = pd.DataFrame([{
+        "Cliente": str(c.get("nome", "")),
+        "Vendedor": str(c.get("vendedor", "")).split(" ")[0].title(),
+        "UF": str(c.get("uf", "")),
+        "Notas": _mv_int(c.get("notas")),
+        "Receita no Mês": _mv_num(c.get("receita")),
+    } for c in top])
+    show_money_table(dt, ["Receita no Mês"], use_container_width=True,
+                     hide_index=True, height=min(400, 35 * len(dt) + 38))
+
+
+def page_mes_vivo():
+    st.header("🔴 Mês ao Vivo")
+    mv = load_silver_mes_vivo()
+    # BLINDAGEM (padrão Fase 2): json ausente/inesperado NUNCA derruba o app
+    if not (isinstance(mv, dict) and isinstance(mv.get("total"), dict)
+            and mv.get("mes_nome")):
+        st.info("📡 Os dados ao vivo ainda não foram publicados pela rotina do "
+                "banco. Eles chegam de hora em hora — volte em instantes.")
+        return
+    total = mv["total"]
+    ant = mv.get("anterior") if isinstance(mv.get("anterior"), dict) else {}
+    vendedores = [v for v in (mv.get("vendedores") or []) if isinstance(v, dict)]
+    por_dia = [x for x in (mv.get("por_dia") or [])
+               if isinstance(x, dict) and x.get("d")]
+    top = [c for c in (mv.get("top_clientes") or []) if isinstance(c, dict)]
+    dia = max(_mv_int(mv.get("dia"), 1), 1)
+    dias_mes = max(_mv_int(mv.get("dias_no_mes"), 30), 1)
+    mes_curto = str(mv.get("mes_nome", "")).split("/")[0]
+    st.caption(f"**{esc(str(mv.get('mes_nome', '')))}**, dia {dia} de {dias_mes} — "
+               f"direto do banco (carga de hora em hora; após o dia 25, a cada "
+               f"30 min). Última publicação: {esc(str(mv.get('gerado_em', '?')))}. "
+               "A nota não carrega hora — o dia cresce a cada carga.")
+
+    # FRESCOR (auditoria 06/08): rotina parada não pode passar por "ao vivo" —
+    # mês virou sem publicação nova, ou última publicação velha ⇒ aviso claro
+    if str(mv.get("mes", "")) != datetime.now().strftime("%Y-%m"):
+        st.warning(f"⚠️ Estes números são de **{esc(str(mv.get('mes_nome', '?')))}** — "
+                   "a rotina do PC ainda não publicou o mês corrente. "
+                   "Não use como 'ao vivo'.")
+    else:
+        try:
+            _idade_h = (datetime.now() - datetime.strptime(
+                str(mv.get("gerado_em", "")), "%Y-%m-%d %H:%M")).total_seconds() / 3600
+            if _idade_h > 26:
+                st.warning(f"⚠️ Última publicação há **{_idade_h / 24:.0f} dia(s)** — "
+                           "a rotina do PC não está rodando; os números abaixo "
+                           "estão defasados.")
+        except ValueError:
+            pass
+
+    # ---- vendedor: SÓ os números dele. Gate por PAPEL (auditoria 06/08:
+    # vendor_filter vazio não pode liberar a visão completa/comissões) ----
+    if not has_full_data_access():
+        vf = st.session_state.get("vendor_filter")
+        if not vf:
+            st.info("Seu usuário está sem carteira configurada — peça ao admin "
+                    "para definir o vendedor no seu cadastro.")
+            return
+        # match pelo 1º nome (mesmo critério do resto da integração): não
+        # quebra se o rótulo da planilha de metas for renomeado
+        _vf1 = str(vf).split(" ")[0].lower()
+        meus = [v for v in vendedores
+                if str(v.get("nome", "")).split(" ")[0].lower() == _vf1]
+        if not meus:
+            st.info(f"Ainda não há vendas suas registradas em {mes_curto}.")
+            return
+        _mes_vivo_bloco_vendedor(meus[0], dia, dias_mes, ant.get("mes_nome"))
+        meus_cli = [c for c in top
+                    if str(c.get("vendedor", "")).split(" ")[0].lower() == _vf1]
+        if meus_cli:
+            st.subheader(f"Seus clientes em {mes_curto}")
+            _mes_vivo_tabela_clientes(meus_cli)
+        return
+
+    # ---- visão completa (admin/diretor) ----
+    receita = _mv_num(total.get("receita"))
+    ant_ate = _mv_num(ant.get("receita_ate_dia"))
+    ant_total = _mv_num(ant.get("receita_total"))
+    proj = receita / max(dia, 1) * dias_mes
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(f"Receita de {mes_curto}", fmt_brl(receita),
+              (f"{(receita / ant_ate - 1) * 100:+.0f}% vs mesmo dia de "
+               f"{ant.get('mes_nome')}" if ant_ate > 0 else None))
+    k2.metric("Projeção do mês", fmt_brl(proj),
+              (f"{(proj / ant_total - 1) * 100:+.0f}% vs {ant.get('mes_nome')} "
+               f"fechado" if ant_total > 0 else None),
+              help="Projeção linear: receita até agora ÷ dias corridos × dias do mês.")
+    k3.metric("Notas no mês", f"{_mv_int(total.get('notas'))}")
+    k4.metric("Clientes atendidos", f"{_mv_int(total.get('clientes'))}")
+
+    st.divider()
+    st.subheader("🎯 Meta por vendedor")
+    st.caption("Metas oficiais do plano 2026 (fonte: dash da TV, projeto Demanda).")
+    for v in vendedores:
+        _mes_vivo_bloco_vendedor(v, dia, dias_mes, ant.get("mes_nome"))
+
+    if por_dia:
+        st.divider()
+        st.subheader("📈 Receita por dia")
+        dias_x = [str(x["d"])[-2:] for x in por_dia]
+        vals = [_mv_num(x.get("r")) for x in por_dia]
+        acum, s = [], 0.0
+        for r in vals:
+            s += r
+            acum.append(round(s, 2))
+        fig = go.Figure()
+        fig.add_bar(x=dias_x, y=vals, name="No dia", marker_color="#3b82f6")
+        fig.add_scatter(x=dias_x, y=acum, name="Acumulado", mode="lines+markers",
+                        line=dict(color="#FF6B35", width=3))
+        fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
+                          legend=dict(orientation="h", y=1.1),
+                          xaxis_title=f"Dia de {mes_curto}")
+        st.plotly_chart(fig, use_container_width=True)
+
+    if top:
+        st.divider()
+        st.subheader(f"🏆 Top 30 clientes de {mes_curto}")
+        if len(top) > 30:
+            st.caption(f"Os 30 maiores de {len(top)} clientes atendidos no mês.")
+        _mes_vivo_tabela_clientes(top[:30])
+
+
 def page_manager(df, months, df_sku, products_df):
     st.header("🎛️ Painel do Gestor")
     st.caption(f"Acompanhamento objetivo do canal Distribuição — dados até **{months[-1]}**.")
@@ -4233,6 +4407,7 @@ def main():
         elif has_full_data_access():
             pages = {
                 "🎛️ Painel do Gestor": "manager",
+                "🔴 Mês ao Vivo": "mesvivo",
                 "✅ Ações do Time": "actions",
                 "📊 Visão Geral": "overview",
                 "👤 Clientes": "clients",
@@ -4246,6 +4421,7 @@ def main():
         else:
             pages = {
                 "✅ Minhas Ações": "actions",
+                "🔴 Meu Mês ao Vivo": "mesvivo",
                 "📊 Minha Visão Geral": "overview",
                 "👤 Meus Clientes": "clients",
                 "🧩 Mix de Produtos": "mix",
@@ -4463,6 +4639,8 @@ def main():
 
     if page == "garantia":
         page_garantias(df_products, df_clients)
+    elif page == "mesvivo":
+        page_mes_vivo()
     elif page == "manager":
         page_manager(df_clients, months, df_sku, df_products)
     elif page == "actions":

@@ -2371,6 +2371,12 @@ def _mv_int(v, dflt=0):
         return dflt
 
 
+def _mv_brl(v):
+    """fmt_brl seguro p/ st.markdown/st.caption: dois 'R$' na mesma linha
+    viram fórmula LaTeX no markdown do Streamlit — escapar o cifrão resolve."""
+    return fmt_brl(v).replace("$", "\\$")
+
+
 def _mes_vivo_bloco_vendedor(v, dia, dias_mes, mes_ant_nome):
     """Bloco de um vendedor na página Mês ao Vivo: progresso vs meta + ritmo."""
     nome = str(v.get("nome", "?")).replace(" Propetz Distribuição", "") \
@@ -2380,18 +2386,18 @@ def _mes_vivo_bloco_vendedor(v, dia, dias_mes, mes_ant_nome):
     proj = receita / max(dia, 1) * dias_mes
     if meta > 0:
         pct = receita / meta
-        st.markdown(f"**{nome}** — {fmt_brl(receita)} de {fmt_brl(meta)} "
-                    f"(**{pct * 100:.0f}%** da meta) · projeção {fmt_brl(proj)} "
+        st.markdown(f"**{nome}** — {_mv_brl(receita)} de {_mv_brl(meta)} "
+                    f"(**{pct * 100:.0f}%** da meta) · projeção {_mv_brl(proj)} "
                     f"({proj / meta * 100:.0f}% da meta)")
         st.progress(max(0.0, min(pct, 1.0)))
         desb = _mv_num(v.get("meta_desbloqueio"))
         extra = []
         if desb > 0:
             extra.append("🔓 comissão desbloqueada" if receita >= desb else
-                         f"desbloqueio da comissão: {fmt_brl(desb)} "
-                         f"(faltam {fmt_brl(desb - receita)})")
+                         f"desbloqueio da comissão: {_mv_brl(desb)} "
+                         f"(faltam {_mv_brl(desb - receita)})")
     else:
-        st.markdown(f"**{nome}** — {fmt_brl(receita)} *(sem meta cadastrada)*")
+        st.markdown(f"**{nome}** — {_mv_brl(receita)} *(sem meta cadastrada)*")
         extra = []
     extra.append(f"{_mv_int(v.get('notas'))} nota(s) · "
                  f"{_mv_int(v.get('clientes'))} cliente(s)")

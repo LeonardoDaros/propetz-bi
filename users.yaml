@@ -34,6 +34,11 @@ users:
     password: scrypt$16384$8$1$a37d9fc67a7a990699a12c2e70e25165$4e6436b4a3f31fd5a69d84985f9d6e753b4eaafeadb239d9a63b3b6a6dbd7ddd
     role: garantia
     vendor_filter: null
+  thiago:
+    name: Thiago
+    password: scrypt$16384$8$1$bf441501e31dfe632e9334c8e0400528$789288d6e3eb6acf9e81eddb6c3ccc29e30e1bc6c0321b583cd199c37201ca58
+    role: garantia
+    vendor_filter: null
   yasmin:
     name: Yasmin
     password: scrypt$16384$8$1$4ef84f32b7f603c3ebc7b93e0154f6e8$488207367724f24b07d54477694d8eccd69dfb82bed781c28ed03bac33c47953

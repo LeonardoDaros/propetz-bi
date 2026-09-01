@@ -17,7 +17,7 @@ if not os.path.exists(ARQ):  # arquivo pode ter ficado na raiz (trava do Excel)
 OUT = os.path.join(BASE, "_modelo_tabela.json")
 NOVOS = (r"C:\Users\leoda\OneDrive\Área de Trabalho\Dcorp\ATUALIZAR MES A MES"
          r"\Tabela de Preço\Novos valores distribuicao (1).xlsx")
-ABA_MES = "Ago-26"
+ABA_MES = "Set-26"
 # REGRA 03/08/2026 (Leonardo): estoque zerado no mestre NÃO retira produto da
 # tabela — item em linha com reposição a caminho segue vendável; os zerados
 # saem LISTADOS no resumo para serem questionados. Retirar exige decisão humana
@@ -347,6 +347,28 @@ for it in produtos:
         abaixo_custo.append({"sku": it["sku"], "nome": it["nome"], "custo": round(c, 2),
                              "tabela": it["preco_tabela"], "vigente": round(vigente, 2)})
 
+# ---- CÓDIGO DE BARRAS: a TABELA_NCM é a AUTORIDADE (Leonardo 26/08) ----
+# A FOB antiga tinha 10 barras errados (2 TROCADOS entre si) e os produtos
+# adicionados vinham sem barras. SKU fora da tabela nova mantém o que tinha.
+ARQ_BARRAS = os.path.join(BASE, "TABELA_NCM,_CÓDIGO_BARRAS_PROPETZ_2026.xlsx")
+barras_corrigidos = []
+try:
+    _ws_b = openpyxl.load_workbook(abrir_ou_copiar(ARQ_BARRAS, "_ncm_barras.xlsx"),
+                                   data_only=True)["Produtos"]
+    _mapa_b = {}
+    for _rb in range(12, _ws_b.max_row + 1):
+        _skub = str(_ws_b.cell(_rb, 1).value or "").strip()
+        _cbb = "".join(ch for ch in str(_ws_b.cell(_rb, 3).value or "") if ch.isdigit())
+        if _skub and _skub.upper() not in ("CÓDIGO", "CODIGO") and _cbb:
+            _mapa_b[_skub] = _cbb
+    for it in produtos:
+        _novo_b = _mapa_b.get(it["sku"])
+        if _novo_b and _novo_b != it["barras"]:
+            barras_corrigidos.append((it["sku"], it["barras"] or "(vazio)", _novo_b))
+            it["barras"] = _novo_b
+except Exception as _e_b:
+    print(f"AVISO: tabela de barras indisponível ({_e_b}) — barras da FOB mantidos")
+
 # resumo fiel ao estado FINAL: a lista semeada da marca vermelha da FOB antiga
 # envelhece depois do mestre e das decisões registradas
 sem_estoque = [p["sku"] for p in produtos if p["sem_estoque"]]
@@ -354,7 +376,7 @@ zerados_mantidos = sorted(p["sku"] for p in produtos
                           if not p["sem_estoque"]
                           and p.get("estoque") is not None and p["estoque"] <= 0)
 
-modelo = {"vigencia": "Agosto/2026", "produtos": produtos,
+modelo = {"vigencia": "Setembro/2026", "produtos": produtos,
           "promos_reais": promos_reais, "promos_descartadas": promos_lixo,
           "minimos": minimos, "sugeridos": sugeridos,
           "sem_estoque": sem_estoque, "abaixo_custo": abaixo_custo,
@@ -374,6 +396,10 @@ if zerados_mantidos:
           f"exige decisão do Leonardo): {zerados_mantidos}")
 if RETIRADOS:
     print(f"RETIRADOS por decisão registrada (ver comentário em RETIRADOS): {sorted(RETIRADOS)}")
+if barras_corrigidos:
+    print(f"BARRAS corrigidos pela TABELA_NCM: {len(barras_corrigidos)}")
+    for _s, _a, _n in barras_corrigidos:
+        print(f"  {_s}: {_a} -> {_n}")
 print("\nPROMOS REAIS:")
 for sku, p in sorted(promos_reais.items(), key=lambda x: -x[1]["desc_pct"]):
     nome = next((i["nome"] for i in produtos if i["sku"] == sku), nomes_p2.get(sku, "?"))

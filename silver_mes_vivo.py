@@ -27,8 +27,14 @@ from util_comum import (abrir_ou_copiar, norm_cliente,      # noqa: E402
 SAIDA = os.path.join(BASE, "silver_mes_vivo.json")
 METAS_XLSX = os.path.join(os.path.dirname(BASE), "Demanda Curva abc",
                           "Demanda Curva Abc - Pet", "Metas_Vendedores.xlsx")
+# REGRA Leonardo 06/08: faturamento por vendedor é o LÍQUIDO — venda menos
+# devoluções do mês, sem IPI e sem frete. PROVA EMPÍRICA (14 notas de agosto,
+# 06/08): valor_total do banco JÁ exclui IPI e frete (valor_nota = valor_total
+# + valor_ipi + valor_frete, exato em todas) — falta só abater as devoluções.
 FILTRO = ("tipo_faturamento = 'NF de Venda' "
           "AND modelo_negocio_descricao = 'Distribuição PROPETZ'")
+FILTRO_DEV = ("tipo_faturamento = 'NF de Devolução' "
+              "AND modelo_negocio_descricao = 'Distribuição PROPETZ'")
 MESES_PT = ["", "janeiro", "fevereiro", "março", "abril", "maio", "junho",
             "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
 
@@ -99,13 +105,32 @@ def coletar():
         FROM silver.faturamento
         WHERE ano = %s AND mes = %s AND {FILTRO}
         GROUP BY 1, 2""", [ano, mes])
-    anterior = []
+    # devoluções do mês (abatem o líquido) — por vendedor×dia e por cliente
+    atual_dev = consultar(f"""
+        SELECT coalesce(vendedor_nome,'(sem vendedor)') AS v, data_emissao AS d,
+               count(*) AS n, round(sum(valor_total)::numeric,2) AS r
+        FROM silver.faturamento
+        WHERE ano = %s AND mes = %s AND {FILTRO_DEV}
+        GROUP BY 1, 2""", [ano, mes])
+    clientes_dev = consultar(f"""
+        SELECT cliente_nome, coalesce(vendedor_nome,'(sem vendedor)') AS v,
+               round(sum(valor_total)::numeric,2) AS r
+        FROM silver.faturamento
+        WHERE ano = %s AND mes = %s AND {FILTRO_DEV}
+        GROUP BY 1, 2""", [ano, mes])
+    anterior, anterior_dev = [], []
     if mes_ant:
         anterior = consultar(f"""
             SELECT coalesce(vendedor_nome,'(sem vendedor)') AS v,
                    data_emissao AS d, round(sum(valor_total)::numeric,2) AS r
             FROM silver.faturamento
             WHERE ano = %s AND mes = %s AND {FILTRO}
+            GROUP BY 1, 2""", [ano_ant, mes_ant])
+        anterior_dev = consultar(f"""
+            SELECT coalesce(vendedor_nome,'(sem vendedor)') AS v,
+                   data_emissao AS d, round(sum(valor_total)::numeric,2) AS r
+            FROM silver.faturamento
+            WHERE ano = %s AND mes = %s AND {FILTRO_DEV}
             GROUP BY 1, 2""", [ano_ant, mes_ant])
 
     # -- agrega (consultar devolve lista de DICTS — chave = alias do SELECT) --
@@ -117,12 +142,19 @@ def coletar():
               f"({total_r} x {prova_r} | {total_n} x {prova_n})")
         return 1
 
+    dev_total = round(sum(_f(x["r"]) for x in atual_dev), 2)
+    receita_liq = round(total_r - dev_total, 2)
+
     por_dia = {}
     for x in atual:
         k = str(x["d"])[:10]
         pd_ = por_dia.setdefault(k, {"r": 0.0, "n": 0})
         pd_["r"] = round(pd_["r"] + _f(x["r"]), 2)
         pd_["n"] += int(x["n"])
+    for x in atual_dev:      # devolução abate o líquido do DIA em que foi emitida
+        k = str(x["d"])[:10]
+        pd_ = por_dia.setdefault(k, {"r": 0.0, "n": 0})
+        pd_["r"] = round(pd_["r"] - _f(x["r"]), 2)
 
     # metas em MELHOR ESFORÇO (auditoria 06/08): planilha ausente/trancada/sem
     # o mês não pode matar a receita — a página lida com "sem meta cadastrada"
@@ -145,6 +177,10 @@ def coletar():
         vd = vend.setdefault(_nome_app(x["v"]), {"receita": 0.0, "notas": 0})
         vd["receita"] = round(vd["receita"] + _f(x["r"]), 2)
         vd["notas"] += int(x["n"])
+    for x in atual_dev:
+        vd = vend.setdefault(_nome_app(x["v"]), {"receita": 0.0, "notas": 0})
+        vd["receita"] = round(vd["receita"] - _f(x["r"]), 2)
+        vd["devolucoes"] = round(vd.get("devolucoes", 0.0) + _f(x["r"]), 2)
 
     # clientes do mês: identidade = norm_cliente (funde variantes '| SN' etc.)
     # POR VENDEDOR unificado — receita de cada vendedor fica separada
@@ -160,22 +196,29 @@ def coletar():
         c["receita"] = round(c["receita"] + _f(x["r"]), 2)
         c["uf"] = c["uf"] or str(x["uf"] or "")
     # contagens SEM dupla contagem: distinto global e por vendedor
+    # (cliente ATENDIDO = comprou; devolução sozinha não conta atendimento)
     total_clientes = len({norm for norm, _ in cli})
     for (norm, vnome) in cli:
         vd = vend.setdefault(vnome, {"receita": 0.0, "notas": 0})
         vd.setdefault("_norms", set()).add(norm)
     for vd in vend.values():
         vd["clientes"] = len(vd.pop("_norms", set()))
-    # prova cruzada extra: mesma tabela, GROUP BY diferente → receitas batem
+    # devoluções abatem a linha do cliente (líquido por cliente)
+    for x in clientes_dev:
+        chave = (norm_cliente(x["cliente_nome"]), _nome_app(x["v"]))
+        c = cli.setdefault(chave, {"nome": str(x["cliente_nome"] or "").strip(),
+                                   "notas": 0, "receita": 0.0, "uf": ""})
+        c["receita"] = round(c["receita"] - _f(x["r"]), 2)
+    # prova cruzada extra: mesma tabela, GROUP BY diferente → líquidos batem
     soma_cli = round(sum(c["receita"] for c in cli.values()), 2)
-    if abs(soma_cli - total_r) > 0.05:
-        print(f"ABORTADO: receita por cliente ({soma_cli}) diverge do total ({total_r})")
+    if abs(soma_cli - receita_liq) > 0.05:
+        print(f"ABORTADO: líquido por cliente ({soma_cli}) diverge do total ({receita_liq})")
         return 1
 
     ant_total, ant_ate_dia = 0.0, 0.0
     ant_vend = {}
-    for x in anterior:
-        r = _f(x["r"])
+    for x, sinal in [(x, 1) for x in anterior] + [(x, -1) for x in anterior_dev]:
+        r = _f(x["r"]) * sinal          # mês anterior no MESMO critério: líquido
         ant_total = round(ant_total + r, 2)
         av = ant_vend.setdefault(_nome_app(x["v"]), {"total": 0.0, "ate_dia": 0.0})
         av["total"] = round(av["total"] + r, 2)
@@ -193,6 +236,7 @@ def coletar():
         vendedores.append({
             "nome": nome,
             "receita": vend.get(nome, {}).get("receita", 0.0),
+            "devolucoes": vend.get(nome, {}).get("devolucoes", 0.0),
             "notas": vend.get(nome, {}).get("notas", 0),
             "clientes": vend.get(nome, {}).get("clientes", 0),
             "meta": m.get("meta"), "meta_desbloqueio": m.get("desbloqueio"),
@@ -206,8 +250,9 @@ def coletar():
         "mes": f"{ano}-{mes:02d}",
         "mes_nome": f"{MESES_PT[mes]}/{ano}",
         "dia": dia, "dias_no_mes": calendar.monthrange(ano, mes)[1],
-        "total": {"receita": total_r, "notas": total_n,
-                  "clientes": total_clientes},
+        "criterio": "liquido",  # venda - devoluções, sem IPI/frete (Leonardo 06/08)
+        "total": {"receita": receita_liq, "notas": total_n,
+                  "clientes": total_clientes, "devolucoes": dev_total},
         "anterior": {"mes_nome": f"{MESES_PT[mes_ant]}/{ano_ant}" if mes_ant else None,
                      "receita_total": ant_total, "receita_ate_dia": ant_ate_dia},
         "por_dia": [{"d": k, **v} for k, v in sorted(por_dia.items())],
@@ -225,7 +270,8 @@ def coletar():
     kb = os.path.getsize(SAIDA) / 1024
     if len(cli) > 1500:
         print(f"AVISO: {len(cli)} clientes no mês — lista cortada em 1500 no json")
-    print(f"mes ao vivo: {saida['mes_nome']} dia {dia} | receita R$ {total_r:,.2f} "
+    print(f"mes ao vivo: {saida['mes_nome']} dia {dia} | LÍQUIDO R$ {receita_liq:,.2f} "
+          f"(vendas {total_r:,.2f} - devoluções {dev_total:,.2f}) "
           f"| {total_n} notas | {saida['total']['clientes']} clientes "
           f"| vendedores: {[v['nome'].split(' ')[0] for v in vendedores]} "
           f"| metas casadas: {sum(1 for v in vendedores if v['meta'])} "

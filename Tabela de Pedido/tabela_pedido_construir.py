@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Constrói a nova tabela de pedidos Propetz (versão cliente) a partir do modelo extraído."""
 import sys, json, os
+from datetime import datetime
 sys.stdout.reconfigure(encoding="utf-8")
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, Protection
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.utils import get_column_letter
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -15,11 +17,17 @@ MODELO = json.load(open(os.path.join(BASE, "_modelo_tabela.json"), encoding="utf
 MODALIDADE = os.environ.get("PEDIDO_MODALIDADE", "FOB").upper()
 FATOR = 1.035 if MODALIDADE == "CIF" else 1.0
 
+# ---- MÊS DA TABELA (trocar aqui + ABA_MES/vigencia no extrair.py) ----
+MES_TXT = "SETEMBRO 2026"          # título/arquivo
+MES_TITULO = "Setembro 2026"       # propriedades do arquivo
+PROMO_MES = "SETEMBRO"             # rótulos de promoção
+VIGENCIA = "01–30/09/2026"
+
 def _preco(v):
     """Aplica o fator da modalidade (CIF = +3,5%) com arredondamento a centavo."""
     return round(float(v) * FATOR, 2)
 
-SAIDA = os.path.join(BASE, f"Pedido Propetz Distribuição {MODALIDADE} - AGOSTO 2026.xlsx")
+SAIDA = os.path.join(BASE, f"Pedido Propetz Distribuição {MODALIDADE} - {MES_TXT}.xlsx")
 # senha de proteção da planilha (Excel sheet-protection — cosmética/removível,
 # NÃO é segredo forte; só evita edição casual do distribuidor). Distinta da
 # senha de login (não reusar propetz2026). Default fica no código de propósito:
@@ -54,7 +62,10 @@ ws.sheet_view.showGridLines = False
 
 ws.merge_cells("A1:L1")
 c = ws["A1"]
-c.value = f"PROPETZ  ·  PEDIDO DISTRIBUIÇÃO {MODALIDADE}  —  AGOSTO 2026"
+# versão VISÍVEL (06/08: distribuidor com arquivo velho reclamou de produto
+# 'sumido' — o carimbo mata a dúvida de qual versão está em circulação)
+c.value = (f"PROPETZ  ·  PEDIDO DISTRIBUIÇÃO {MODALIDADE}  —  {MES_TXT}"
+           f"   (v{datetime.now():%d/%m %H:%M})")
 c.font = Font(name="Inter", size=16, bold=True, color=BRANCO)
 c.fill = PatternFill("solid", fgColor=TEAL_ESCURO)
 c.alignment = Alignment(horizontal="center", vertical="center")
@@ -64,9 +75,9 @@ ws.merge_cells("A2:L2")
 c = ws["A2"]
 _frete_txt = ("FRETE JÁ INCLUÍDO nos preços (CIF)" if MODALIDADE == "CIF"
               else "Frete a cotar")
-c.value = ("Vigência 01–31/08/2026   ·   À VISTA (PIX/transferência): 5% de desconto no total   ·   "
+c.value = (f"Vigência {VIGENCIA}   ·   À VISTA (PIX/transferência): 5% de desconto no total   ·   "
            f"A PRAZO: boleto 21/35/49/63/77/91 (sujeito a análise)   ·   {_frete_txt}   ·   "
-           "LINHAS LARANJA = PROMOÇÃO DE AGOSTO — preço promocional JÁ APLICADO nos totais   ·   "
+           f"LINHAS LARANJA = PROMOÇÃO DE {PROMO_MES} — preço promocional JÁ APLICADO nos totais   ·   "
            "Equipamentos, lâminas, adaptadores e tesouras: QUANTIDADE MÍNIMA (acima dela, qualquer qtde) "
            "· Acessórios: CAIXA FECHADA — a planilha só aceita múltiplos da caixa")
 c.font = Font(name="Inter", size=9, color="FF1E293B")
@@ -107,25 +118,42 @@ ws["L4"].font = Font(name="Inter", size=12, bold=True, color="FFC00000")
 
 ws["A5"] = ("Preencha só a coluna QTD (células azuis) — digite livre, os totais calculam sozinhos. "
             "Se aparecer ⚠ na coluna AVISO, a quantidade está fora do padrão (abaixo do mínimo ou "
-            "caixa aberta): o pedido segue, e o vendedor confirma com você. Filtros no cabeçalho.")
+            "caixa aberta): o pedido segue, e o vendedor confirma com você. Filtros no cabeçalho. "
+            "Linha RISCADA = produto esgotado (não entra nos totais).")
 ws["A5"].font = f_peq
 ws.merge_cells("A5:L5")
 
 cab = ["CATEGORIA", "CÓDIGO", "CÓD. BARRAS", "PRODUTO", "QTD", "PREÇO TABELA",
-       "PROMO AGOSTO", "ECONOMIA", "IPI", "PREÇO FINAL C/ IPI", "TOTAL", "AVISO"]
+       f"PROMO {PROMO_MES}", "ECONOMIA", "IPI", "PREÇO FINAL C/ IPI", "TOTAL", "AVISO"]
 for i, t in enumerate(cab, 1):
     c = ws.cell(6, i, t)
     c.font = Font(name="Inter", size=9, bold=True, color=BRANCO)
     c.fill = PatternFill("solid", fgColor=TEAL)
     c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     c.border = borda
+# col N: marcação de esgotado NO MEIO DO MÊS (pedido Leonardo 06/08) — a
+# diretora comercial escreve qualquer coisa ali (célula DESTRAVADA) e a linha
+# inteira fica riscada + fora dos totais, sem regenerar a planilha
+c = ws.cell(6, 14, "ESGOTOU?")
+c.font = Font(name="Inter", size=9, bold=True, color=BRANCO)
+c.fill = PatternFill("solid", fgColor=TEAL)
+c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+c.border = borda
 ws.row_dimensions[6].height = 24
 
 larguras = {"A": 24, "B": 16, "C": 15, "D": 52, "E": 8, "F": 13, "G": 13,
-            "H": 10, "I": 7, "J": 15, "K": 15, "L": 34, "M": 5}
+            "H": 10, "I": 7, "J": 15, "K": 15, "L": 34, "M": 5, "N": 11}
 for col, w in larguras.items():
     ws.column_dimensions[col].width = w
 ws.column_dimensions["M"].hidden = True  # qtd válida (uso interno das somas)
+
+CINZA_INPUT = "FFF1F5F9"
+dv_esgotou = DataValidation(showInputMessage=True, allow_blank=True,
+                            promptTitle="Produto esgotou?",
+                            prompt=("Uso Propetz: escreva qualquer coisa (ex.: SIM) "
+                                    "para riscar o produto e tirá-lo dos totais. "
+                                    "Apague para reativar."))
+ws.add_data_validation(dv_esgotou)
 
 # SEM lista de dropdown na QTD: o autocompletar do Excel 365 "corrige" a
 # digitação p/ o 1º item da lista que casa (5→50, 13→132, 2→20 — bug real
@@ -258,8 +286,10 @@ for p in produtos:
     cf.number_format = '"R$" #,##0.00'
     cf.font = Font(name="Inter", size=10, bold=True)
     # col M (oculta): quantidade VÁLIDA — só inteiro >= 0 entra nos totais
-    # (auditoria: -4 subtraía R$ do pedido e 4,5 somava fração)
-    cm = ws.cell(r, 13, f"=IF(ISNUMBER($E{r}),IF(AND($E{r}>=0,$E{r}=INT($E{r})),$E{r},0),0)")
+    # (auditoria: -4 subtraía R$ do pedido e 4,5 somava fração); produto
+    # marcado ESGOTADO (col N) sai dos totais na hora
+    cm = ws.cell(r, 13, f'=IF($N{r}<>"",0,'
+                        f'IF(ISNUMBER($E{r}),IF(AND($E{r}>=0,$E{r}=INT($E{r})),$E{r},0),0))')
     cm.font = f_peq
     ct = ws.cell(r, 11, f"=$M{r}*$J{r}")
     ct.number_format = '"R$" #,##0.00'
@@ -278,11 +308,21 @@ for p in produtos:
         else:
             _rot = f"⚠ NÃO FECHA CAIXA (múltiplos de {passo})"
         _chk = f'IF({_valido},"","{_rot}")'
-    # $E="" primeiro: Delete na célula NÃO é erro (vazio = zero, sem aviso)
-    av = ws.cell(r, 12, f'=IF($E{r}="","",IF(NOT(ISNUMBER($E{r})),"⚠ QUANTIDADE INVÁLIDA",'
+    # ESGOTADO primeiro (avisa se o cliente já tinha qtd); $E="" depois:
+    # Delete na célula NÃO é erro (vazio = zero, sem aviso)
+    av = ws.cell(r, 12, f'=IF($N{r}<>"",IF(AND(ISNUMBER($E{r}),$E{r}>0),'
+                        f'"⚠ PRODUTO ESGOTADO — retire a quantidade",""),'
+                        f'IF($E{r}="","",IF(NOT(ISNUMBER($E{r})),"⚠ QUANTIDADE INVÁLIDA",'
                         f'IF(OR($E{r}<0,$E{r}<>INT($E{r})),"⚠ QUANTIDADE INVÁLIDA",'
-                        f'IF($E{r}=0,"",{_chk}))))')
+                        f'IF($E{r}=0,"",{_chk})))))')
     av.font = Font(name="Inter", size=9, bold=True, color="FFC00000")
+    ne = ws.cell(r, 14, "")
+    ne.fill = PatternFill("solid", fgColor=CINZA_INPUT)
+    ne.font = Font(name="Inter", size=9, bold=True, color="FF991B1B")
+    ne.alignment = Alignment(horizontal="center")
+    ne.protection = Protection(locked=False)
+    ne.border = borda
+    dv_esgotou.add(ne.coordinate)
     for col in range(1, 13):
         cel = ws.cell(r, col)
         cel.border = borda
@@ -301,7 +341,16 @@ tt.font = Font(name="Inter", size=12, bold=True, color="FF085041")
 for col in range(1, 13):
     ws.cell(r, col).fill = PatternFill("solid", fgColor=TEAL_CLARO)
 
-ws.auto_filter.ref = f"A6:L{ULT}"
+# linha marcada ESGOTADO (col N preenchida) fica RISCADA e acinzentada inteira
+# — formatação condicional funciona mesmo com a planilha protegida
+ws.conditional_formatting.add(
+    f"A{PRIM}:L{ULT}",
+    FormulaRule(formula=[f'$N{PRIM}<>""'], stopIfTrue=False,
+                font=Font(name="Inter", strike=True, color="FF9CA3AF"),
+                fill=PatternFill(start_color="FFF3F4F6", end_color="FFF3F4F6",
+                                 fill_type="solid")))
+
+ws.auto_filter.ref = f"A6:N{ULT}"
 ws.freeze_panes = "A7"
 ws.protection.sheet = True
 ws.protection.password = SENHA
@@ -321,8 +370,12 @@ c.alignment = Alignment(horizontal="center", vertical="center")
 wl.row_dimensions[1].height = 28
 wl.merge_cells("A2:H2")
 wl["A2"] = ("Revenda sugerida = preço do site Propetz −5% (você vende MAIS BARATO que o nosso "
-            "site). Mínimo permitido = site −15% (piso p/ não desvalorizar a marca). Preencha o "
-            "PEDIDO e este painel calcula o seu lucro sozinho.")
+            "site). Mínimo permitido = site −15% (piso p/ não desvalorizar a marca). "
+            "O SEU PREÇO abaixo JÁ INCLUI o IPI — o ganho mostrado é a sua margem REAL"
+            + (", com frete incluso." if MODALIDADE == "CIF" else
+               ". Cotou o frete? Digite em FRETE COTADO (acima) que o rateio entra "
+               "por item, proporcional ao valor — como na NF.")
+            + " Preencha o PEDIDO e este painel calcula o seu lucro sozinho.")
 wl["A2"].font = f_peq
 
 # ---- pré-cálculo por linha (alimenta painel + top oportunidades) ----
@@ -336,9 +389,14 @@ for i, p in enumerate(produtos):
     else:
         sug = sugeridos.get(p["sku"])
     promo = promos.get(p["sku"])
-    preco_vig = _preco(promo["promo"] if promo else p["preco_tabela"])
+    # REGRA 26/08 (Leonardo): a base do lucro é o preço final COM IPI — sem
+    # isso a % de ganho saía inflada e divergia do GANHO PROJETADO em R$
+    # (que sempre usou PEDIDO!$J$, o preço c/ IPI). Margem REAL, sem surpresa.
+    vig_sem_ipi = _preco(promo["promo"] if promo else p["preco_tabela"])
+    preco_vig = round(vig_sem_ipi * (1 + (p.get("ipi") or 0)), 2)
     ganho = (sug["sugerido"] / preco_vig - 1) if (sug and preco_vig) else None
     linhas_lucro.append({"p": p, "sug": sug, "promo": promo, "vig": preco_vig,
+                         "vig_sem_ipi": vig_sem_ipi,  # base do rateio de frete (NF)
                          "ganho": ganho, "linha_pedido": PRIM + i})
 
 CAB_L = 10                    # linha do cabeçalho da tabela
@@ -366,6 +424,33 @@ for c_i, c_f, rotulo, formula, fmt in paineis:
     val.font = Font(name="Inter", size=13, bold=True, color="FF085041")
     val.alignment = Alignment(horizontal="center")
 
+# ---- FRETE COTADO (pedido Leonardo 26/08, SÓ FOB — na CIF o frete já está
+# no preço): campo livre p/ vendedor/distribuidor digitarem a cotação; o
+# rateio entra por item (proporcional ao valor dos produtos, como na NF) e o
+# GANHO PROJETADO passa a descontá-lo. Sem merge na célula de input (o save
+# do openpyxl propagaria o destrave — mesma lição do CADASTRO). ----
+if MODALIDADE == "FOB":
+    lab = wl["G3"]
+    lab.value = "FRETE COTADO (R$)\n— digite aqui"
+    lab.font = Font(name="Inter", size=8, bold=True, color=CINZA_TXT)
+    lab.alignment = Alignment(horizontal="center", wrap_text=True)
+    fr = wl["G4"]
+    fr.value = None
+    fr.number_format = '"R$" #,##0.00'
+    fr.font = Font(name="Inter", size=13, bold=True)
+    fr.fill = PatternFill("solid", fgColor=AZUL_INPUT)
+    fr.border = borda
+    fr.alignment = Alignment(horizontal="center")
+    fr.protection = Protection(locked=False)
+    dv_frete = DataValidation(showInputMessage=True, allow_blank=True,
+                              promptTitle="Frete cotado do pedido",
+                              prompt=("Digite o valor do frete (R$). O rateio por "
+                                      "item aparece na coluna FRETE RATEADO e o "
+                                      "GANHO PROJETADO já desconta. Apague para "
+                                      "voltar ao cenário sem frete."))
+    wl.add_data_validation(dv_frete)
+    dv_frete.add("G4")
+
 # ---- TOP OPORTUNIDADES com status ao vivo ----
 wl.merge_cells("A5:H5")
 wl["A5"] = "🔥 MAIORES GANHOS DA TABELA — complete o seu pedido com eles:"
@@ -381,9 +466,12 @@ for j, t in enumerate(_top):
                     f'"   ←  ainda FORA do seu pedido","   ✔ já no seu pedido")')
     wl[f"A{lr}"].font = f_normal
 
-cab2 = ["CÓDIGO", "PRODUTO", "SEU PREÇO\n(c/ promo)", "REVENDA SUGERIDA\n(site −5%)",
+cab2 = ["CÓDIGO", "PRODUTO", "SEU PREÇO FINAL\n(c/ promo e IPI)", "REVENDA SUGERIDA\n(site −5%)",
         "MÍNIMO PERMITIDO\n(site −15%)", "SEU\nGANHO", "NO SEU PEDIDO\n(unidades)",
         "GANHO PROJETADO\n(R$)"]
+if MODALIDADE == "FOB":
+    cab2[2] = "SEU PREÇO FINAL\n(promo + IPI + frete)"
+    cab2.append("FRETE RATEADO\n(R$/un)")
 for i, t in enumerate(cab2, 1):
     c = wl.cell(CAB_L, i, t)
     c.font = Font(name="Inter", size=9, bold=True, color=BRANCO)
@@ -393,15 +481,24 @@ for i, t in enumerate(cab2, 1):
 wl.row_dimensions[CAB_L].height = 40
 # colunas largas o bastante p/ ler os cabeçalhos (reclamação 22/07)
 for col, w in {"A": 15, "B": 42, "C": 14, "D": 19, "E": 19, "F": 10,
-               "G": 15, "H": 18}.items():
+               "G": 15, "H": 18, "I": 13}.items():
     wl.column_dimensions[col].width = w
+if MODALIDADE == "FOB":
+    wl.column_dimensions["J"].hidden = True  # preço s/ IPI (base do rateio NF)
 
 r = D0
 for l in linhas_lucro:
     p, sug, promo = l["p"], l["sug"], l["promo"]
     wl.cell(r, 1, p["sku"]).font = f_normal
     wl.cell(r, 2, p["nome"]).font = f_normal
-    cpv = wl.cell(r, 3, round(l["vig"], 2))
+    if MODALIDADE == "FOB":
+        # preço final DINÂMICO (pedido Leonardo 26/08): com frete cotado, o
+        # custo unitário real aparece AQUI — não só numa coluna ao lado
+        _ipi_lit = repr(float(l["p"].get("ipi") or 0))
+        cpv = wl.cell(r, 3, f'=ROUND($J{r}*(1+{_ipi_lit}),2)'
+                            f'+IF(ISNUMBER($I{r}),$I{r},0)')
+    else:
+        cpv = wl.cell(r, 3, round(l["vig"], 2))
     cpv.number_format = '"R$" #,##0.00'
     cpv.font = Font(name="Inter", size=10, bold=bool(promo),
                     color=LARANJA_TXT if promo else "FF000000")
@@ -411,24 +508,40 @@ for l in linhas_lucro:
     cm = wl.cell(r, 5, sug["minimo"] if sug else None)
     cm.number_format = '"R$" #,##0.00'
     cm.font = f_peq
-    cg = wl.cell(r, 6, round(l["ganho"], 4) if l["ganho"] is not None else None)
-    cg.number_format = '"+"0%'
+    if MODALIDADE == "FOB":
+        # % de ganho DINÂMICA: recalcula quando o frete entra no preço final
+        cg = wl.cell(r, 6, f'=IF(OR($D{r}="",$C{r}<=0),"",$D{r}/$C{r}-1)')
+        cg.number_format = '+0%;-0%'
+    else:
+        cg = wl.cell(r, 6, round(l["ganho"], 4) if l["ganho"] is not None else None)
+        cg.number_format = '"+"0%'
     cg.font = Font(name="Inter", size=10, bold=True, color="FF0F6E56")
     lp = l["linha_pedido"]
     cq = wl.cell(r, 7, f"=PEDIDO!$M${lp}")
     cq.number_format = '0'
     cq.font = Font(name="Inter", size=10, bold=True)
     cq.alignment = Alignment(horizontal="center")
+    if MODALIDADE == "FOB":
+        # frete rateado por UNIDADE: FRETE × preço-produto ÷ Σ(qtd × preço) —
+        # a mesma proporção por valor dos produtos que a NF usa no rateio
+        ci_ = wl.cell(r, 9, f'=IF(OR(NOT(ISNUMBER($G$4)),$G$4<=0,$G{r}=0),"",'
+                            f'IFERROR(ROUND($G$4*$J{r}/SUMPRODUCT('
+                            f'PEDIDO!$M${PRIM}:$M${ULT},$J${D0}:$J${DF}),2),""))')
+        ci_.number_format = '"R$" #,##0.00'
+        ci_.font = f_peq
+        wl.cell(r, 10, l["vig_sem_ipi"]).font = f_peq  # col J oculta (base NF)
+    # $C já é o preço final COMPLETO (na FOB inclui o frete rateado quando
+    # cotado) — o ganho em R$ é sempre D−C, nas duas modalidades
     ch = wl.cell(r, 8, f'=IF(OR($D{r}="",$G{r}=0),"",'
-                       f'ROUND($G{r}*($D{r}-PEDIDO!$J${lp}),2))')
+                       f'ROUND($G{r}*($D{r}-$C{r}),2))')
     ch.number_format = '"R$" #,##0.00'
     ch.font = Font(name="Inter", size=10, bold=True, color="FF085041")
-    for col in range(1, 9):
+    for col in range(1, 10 if MODALIDADE == "FOB" else 9):
         wl.cell(r, col).border = borda
         if promo:
             wl.cell(r, col).fill = PatternFill("solid", fgColor=LARANJA_CLARO)
     r += 1
-wl.auto_filter.ref = f"A{CAB_L}:H{DF}"
+wl.auto_filter.ref = f"A{CAB_L}:{'I' if MODALIDADE == 'FOB' else 'H'}{DF}"
 wl.freeze_panes = f"A{D0}"
 wl.protection.sheet = True
 wl.protection.password = SENHA
@@ -496,7 +609,7 @@ wc.protection.password = SENHA
 
 wb.active = 0
 props = wb.properties
-props.title = "Pedido Propetz Distribuição — Agosto 2026"
+props.title = f"Pedido Propetz Distribuição — {MES_TITULO}"
 props.creator = "Propetz / Grupo Daros"
 try:
     wb.save(SAIDA)

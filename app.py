@@ -2401,6 +2401,9 @@ def _mes_vivo_bloco_vendedor(v, dia, dias_mes, mes_ant_nome):
         extra = []
     extra.append(f"{_mv_int(v.get('notas'))} nota(s) · "
                  f"{_mv_int(v.get('clientes'))} cliente(s)")
+    _dev_v = _mv_num(v.get("devolucoes"))
+    if _dev_v > 0:
+        extra.append(f"↩️ devoluções abatidas: {_mv_brl(_dev_v)}")
     ant_ate = _mv_num(v.get("anterior_ate_dia"))
     if ant_ate > 0 and mes_ant_nome:
         extra.append(f"vs mesmo dia de {mes_ant_nome}: "
@@ -2441,7 +2444,9 @@ def page_mes_vivo():
     st.caption(f"**{esc(str(mv.get('mes_nome', '')))}**, dia {dia} de {dias_mes} — "
                f"direto do banco (carga de hora em hora; após o dia 25, a cada "
                f"30 min). Última publicação: {esc(str(mv.get('gerado_em', '?')))}. "
-               "A nota não carrega hora — o dia cresce a cada carga.")
+               "A nota não carrega hora — o dia cresce a cada carga. "
+               "**Critério: receita LÍQUIDA** — vendas menos devoluções do mês, "
+               "sem IPI e sem frete (regra 06/08).")
 
     # FRESCOR (auditoria 06/08): rotina parada não pode passar por "ao vivo" —
     # mês virou sem publicação nova, ou última publicação velha ⇒ aviso claro
@@ -2499,6 +2504,9 @@ def page_mes_vivo():
               help="Projeção linear: receita até agora ÷ dias corridos × dias do mês.")
     k3.metric("Notas no mês", f"{_mv_int(total.get('notas'))}")
     k4.metric("Clientes atendidos", f"{_mv_int(total.get('clientes'))}")
+    _dev_mes = _mv_num(total.get("devolucoes"))
+    if _dev_mes > 0:
+        st.caption(f"↩️ Devoluções já abatidas do mês: {_mv_brl(_dev_mes)}")
 
     st.divider()
     st.subheader("🎯 Meta por vendedor")

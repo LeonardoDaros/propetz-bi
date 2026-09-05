@@ -29,14 +29,14 @@ function Get-DeployPaths {
 
 function Test-AllowedDeployPath {
     param([string]$Path)
-    return ($Path -cin $script:DeployFiles) -or ($Path -cmatch '^teste_etapa1_[A-Za-z0-9_]+\.py$')
+    return ($Path -cin $script:DeployFiles) -or ($Path -cmatch '^teste_etapa[12]_[A-Za-z0-9_]+\.py$')
 }
 
 try {
     $script:DeployRepo = (Resolve-Path -LiteralPath $RepositoryPath).Path
     # Nunca preparar automaticamente users.yaml, estado, secrets ou Backups.
     $script:DeployFiles = @(
-        'app.py', 'util_comum.py', 'requirements.txt', '.gitignore',
+        'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py', 'requirements.txt', '.gitignore',
         '.streamlit/config.toml', 'abc_valor.json',
         'Relatorio Distribuidores Mensal.xlsx',
         'teste_seguranca_login.py', 'deploy_seguro.ps1'
@@ -91,8 +91,8 @@ try {
     }
 
     $tracked = @(Get-DeployPaths -Raw (Invoke-DeployGit -GitArgs @('ls-files', '-z')).Output)
-    $candidates = @($script:DeployFiles) + @($tracked | Where-Object { $_ -cmatch '^teste_etapa1_[A-Za-z0-9_]+\.py$' })
-    $candidates += @(Get-ChildItem -LiteralPath $script:DeployRepo -File -Filter 'teste_etapa1_*.py' | ForEach-Object { $_.Name })
+    $candidates = @($script:DeployFiles) + @($tracked | Where-Object { $_ -cmatch '^teste_etapa[12]_[A-Za-z0-9_]+\.py$' })
+    $candidates += @(Get-ChildItem -LiteralPath $script:DeployRepo -File -Filter 'teste_etapa*.py' | ForEach-Object { $_.Name })
     $toStage = @($candidates | Sort-Object -Unique | Where-Object {
         (Test-AllowedDeployPath $_) -and (($_ -cin $tracked) -or (Test-Path -LiteralPath (Join-Path $script:DeployRepo $_) -PathType Leaf))
     })

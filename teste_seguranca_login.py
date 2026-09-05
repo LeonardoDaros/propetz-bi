@@ -106,8 +106,11 @@ chk(app.esc("<script>x</script>") == "&lt;script&gt;x&lt;/script&gt;", "esc() es
 chk("&lt;b&gt;" in app.status_badge("<b>hack</b>"), "status_badge escapa status externo")
 ins = app.insight_html("warning", "L", "vendedor <img src=x>", "acao")
 chk("&lt;img" in ins, "insight_html escapa texto externo (nome de vendedor)")
-chk("{esc(st.session_state['user_name'])}" in src, "nome do usuario escapado no cabecalho")
-chk("{esc(months[0])}" in src, "rotulos de mes escapados no banner (achado auditoria)")
+ui_src = io.open(app.ui.__file__, encoding="utf-8").read()
+chk("ui.identity(st.session_state['user_name']" in src and "html.escape" in ui_src,
+    "nome do usuario renderizado pelo componente com escape")
+chk("ui.page_hero(" in src and "_text(meta)" in ui_src,
+    "rotulos de mes renderizados pelo componente com escape")
 
 print("\n" + ("SEGURANCA OK — 8 frentes cobertas" if falhas == 0 else f"{falhas} FALHAS"))
 sys.exit(1 if falhas else 0)

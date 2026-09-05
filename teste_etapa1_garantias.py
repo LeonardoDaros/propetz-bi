@@ -58,12 +58,16 @@ def caso(gid="G-1001", status="Concluída", criado="2026-08-10 10:00", **updates
 
 class FakeUI:
     """Widgets não submetem formulários; captura só o que seria exibido."""
-    def __init__(self, role):
+    def __init__(self, role, state=None):
         self.session_state = {"role": role}
+        self.session_state.update(state or {})
         self.messages = []
         self.tables = []
         self.exports = []
         self.metrics = []
+        self.forms = []
+        self.expanders = []
+        self.selectors = {}
 
     def __enter__(self):
         return self
@@ -77,26 +81,38 @@ class FakeUI:
     def tabs(self, labels):
         return [self] * len(labels)
 
-    def expander(self, label, **_):
+    def expander(self, label, **kwargs):
         self.messages.append(str(label))
+        self.expanders.append((str(label), kwargs.get("expanded", False)))
         return self
 
-    def form(self, *_args, **_kwargs):
+    def form(self, key, **_kwargs):
+        self.forms.append(key)
         return self
 
-    def selectbox(self, _label, options, index=0, **_):
-        return options[index] if index is not None and len(options) else None
+    def selectbox(self, label, options, index=0, key=None, format_func=str, **_):
+        options = list(options)
+        default = options[index] if index is not None and len(options) else None
+        selected = self.session_state.get(key, default) if key else default
+        if selected is not None and selected not in options:
+            selected = default
+        if key:
+            self.session_state[key] = selected
+        self.selectors[key or label] = {"label": label, "options": options,
+                                       "labels": [format_func(o) for o in options]}
+        return selected
 
-    def segmented_control(self, _label, options, default=None, **_):
-        return default or options[0]
+    def segmented_control(self, _label, options, default=None, key=None, **_):
+        selected = self.session_state.get(key, default or options[0])
+        return selected if selected in options else default or options[0]
 
-    def text_input(self, _label, value="", **_):
-        return value
+    def text_input(self, _label, value="", key=None, **_):
+        return self.session_state.get(key, value) if key else value
 
     text_area = text_input
 
-    def date_input(self, _label, value=None, **_):
-        return value
+    def date_input(self, _label, value=None, key=None, **_):
+        return self.session_state.get(key, value) if key else value
 
     def number_input(self, _label, *_args, value=0, **_kwargs):
         return value
@@ -125,8 +141,8 @@ class FakeUI:
         raise AssertionError("Não deve haver escrita/submissão durante o teste")
 
 
-def render(role, registros, meta=None, produtos=None):
-    ui = FakeUI(role)
+def render(role, registros, meta=None, produtos=None, state=None):
+    ui = FakeUI(role, state)
     NS.update({"st": ui,
                "load_abc_valor": lambda: copy.deepcopy(META if meta is None else meta),
                "load_garantias": lambda: copy.deepcopy(registros),

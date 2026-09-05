@@ -55,6 +55,11 @@ class AccessRules(unittest.TestCase):
 
 
 class StreamlitAccess(unittest.TestCase):
+    def tearDown(self):
+        # Os scripts AppTest importam o mesmo módulo; não vazar stubs a outras suítes.
+        import importlib
+        importlib.reload(app)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='propetz-acesso-')
         self.addCleanup(self.temp.cleanup)
@@ -85,6 +90,7 @@ app.load_data = data
 def client_page(df, *args):
     st.dataframe(df[['id', 'name']], hide_index=True)
 app.page_actions = client_page
+app.page_agenda = client_page
 app.page_manager = client_page
 app.page_clients = client_page
 app.page_overview = client_page

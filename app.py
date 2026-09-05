@@ -14,6 +14,10 @@ import json
 import base64
 import threading
 import requests
+import uuid
+from zoneinfo import ZoneInfo
+import agenda_comercial as agenda
+import ui_propetz as ui
 from collections import defaultdict
 from datetime import datetime, timedelta, date
 
@@ -24,129 +28,13 @@ st.set_page_config(
     page_title="Propetz BI",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="auto"
 )
 
 # ============================================================
 # CUSTOM CSS
 # ============================================================
-st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-    /* ---- PROPETZ LIGHT THEME (matching TV Dashboard) ---- */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif !important; }
-    .block-container { padding-top: 0.5rem; padding-bottom: 1rem; max-width: 1400px; }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #e2e8f0; }
-    [data-testid="stSidebar"] [data-testid="stMarkdown"] { color: #1e293b; }
-
-    /* Campos de preenchimento em DESTAQUE: sem isso ficam com o mesmo fundo
-       da página e o colaborador não enxerga onde escrever */
-    .stTextInput [data-baseweb="input"], .stNumberInput [data-baseweb="input"],
-    .stDateInput [data-baseweb="input"], .stTextArea [data-baseweb="textarea"] {
-        background-color: #eff6ff !important;
-        border: 1.5px solid #93c5fd !important;
-        border-radius: 8px !important;
-    }
-    .stTextInput input, .stNumberInput input, .stDateInput input,
-    .stTextArea textarea { background-color: transparent !important; }
-    .stTextInput [data-baseweb="input"]:focus-within,
-    .stNumberInput [data-baseweb="input"]:focus-within,
-    .stDateInput [data-baseweb="input"]:focus-within,
-    .stTextArea [data-baseweb="textarea"]:focus-within {
-        background-color: #ffffff !important;
-        border-color: #2563eb !important;
-        box-shadow: 0 0 0 3px rgba(37,99,235,0.15) !important;
-    }
-    .stSelectbox [data-baseweb="select"] > div {
-        background-color: #eff6ff !important;
-        border: 1.5px solid #93c5fd !important;
-        border-radius: 8px !important;
-    }
-
-    /* Header banner */
-    .propetz-header {
-        background: linear-gradient(135deg, #1e3a5f, #2563eb);
-        padding: 20px 28px 14px; color: #fff; border-radius: 0 0 16px 16px;
-        margin: -1rem -1rem 1.5rem -1rem;
-    }
-    .propetz-header h1 { font-size: 26px; font-weight: 800; margin: 0; color: #fff; }
-    .propetz-header .sub { font-size: 13px; opacity: 0.8; margin-top: 2px; }
-
-    /* KPI cards */
-    div[data-testid="stMetric"] {
-        background: #ffffff; border: none; border-radius: 12px; padding: 16px 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-left: 4px solid #3b82f6;
-    }
-    div[data-testid="stMetric"] label { color: #64748b !important; font-size: 12px; font-weight: 500; }
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #1e293b !important; font-size: 22px; font-weight: 700; }
-    div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 11px; font-weight: 600; }
-
-    /* Insight cards */
-    .insight-card {
-        background: #ffffff; border: none; border-radius: 12px;
-        padding: 14px 16px; margin-bottom: 10px; border-left: 4px solid #3b82f6;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    .insight-danger { border-left-color: #ef4444; }
-    .insight-warning { border-left-color: #f59e0b; }
-    .insight-success { border-left-color: #10b981; }
-    .insight-type { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 4px; font-weight: 700; }
-    .insight-text { font-size: 13.5px; line-height: 1.5; color: #1e293b; }
-    .insight-action { font-size: 12px; color: #3b82f6; margin-top: 6px; font-weight: 600; }
-
-    /* Badges */
-    .badge { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; display: inline-block; }
-    .badge-green { color: #10b981; background: rgba(16,185,129,0.12); }
-    .badge-yellow { color: #f59e0b; background: rgba(245,158,11,0.12); }
-    .badge-red { color: #ef4444; background: rgba(239,68,68,0.12); }
-    .badge-blue { color: #3b82f6; background: rgba(59,130,246,0.12); }
-
-    /* Tabs styling */
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] {
-        padding: 7px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
-        color: #64748b; background: #f1f5f9; border: none;
-    }
-    .stTabs [aria-selected="true"] { background: #3b82f6 !important; color: #fff !important; }
-
-    /* Dataframes */
-    [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-
-    /* Expander */
-    [data-testid="stExpander"] { background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; }
-
-    /* Selectbox, multiselect */
-    .stSelectbox > div > div, .stMultiSelect > div > div {
-        background: #ffffff; border-color: #e2e8f0; border-radius: 8px;
-    }
-
-    /* Divider */
-    hr { border-color: #e2e8f0 !important; }
-
-    /* Headers */
-    h1, h2, h3 { color: #1e3a5f !important; }
-
-    /* Login */
-    .login-box {
-        max-width: 400px; margin: 100px auto; background: #ffffff;
-        border: 1px solid #e2e8f0; border-radius: 16px; padding: 40px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-    }
-    .login-title { text-align: center; font-size: 28px; font-weight: 800; margin-bottom: 8px; color: #1e3a5f; }
-    .login-sub { text-align: center; font-size: 14px; color: #64748b; margin-bottom: 24px; }
-
-    /* Plotly chart containers */
-    .stPlotlyChart { background: #ffffff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 8px; }
-
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #f1f5f9; }
-    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-</style>
-""", unsafe_allow_html=True)
+ui.apply_theme()
 
 # ============================================================
 # USER DATABASE (stored in YAML - editable)
@@ -1312,17 +1200,16 @@ def _session_expired():
 # AUTHENTICATION
 # ============================================================
 def login_page():
-    st.markdown('<div class="login-box">', unsafe_allow_html=True)
-    st.markdown('<div class="login-title">Propetz BI</div>', unsafe_allow_html=True)
-    st.markdown('<div class="login-sub">Dashboard Comercial</div>', unsafe_allow_html=True)
-
     # st.form: digitar + clicar Entrar (ou pressionar Enter) vira UMA ação só.
     # Sem o form, o 1º clique apenas confirmava o campo de senha e o usuário
     # achava que o login não funcionava.
-    with st.form("login_form"):
-        username = st.text_input("Usuário", key="login_user")
-        password = st.text_input("Senha", type="password", key="login_pass")
-        submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
+    _, login_column, _ = st.columns([1, 1.25, 1])
+    with login_column:
+        ui.login_header()
+        with st.form("login_form"):
+            username = st.text_input("Usuário", key="login_user")
+            password = st.text_input("Senha", type="password", key="login_pass")
+            submitted = st.form_submit_button("Entrar", use_container_width=True, type="primary")
 
     if submitted:
         username = str(username).strip().lower()
@@ -1357,8 +1244,6 @@ def login_page():
                         st.error(f"Usuário ou senha incorretos. ({remaining} tentativas restantes)")
                     else:
                         st.error(f"🔒 Conta bloqueada por {_BF_JANELA // 60} minutos após muitas tentativas incorretas.")
-
-    st.markdown('</div>', unsafe_allow_html=True)
 
 # ============================================================
 # DATA LOADING
@@ -1799,7 +1684,7 @@ def process_excel(xlsx_path):
             elif '/' in str(v):
                 month_cols.append(c)
                 month_headers.append(str(v).strip().upper())
-        
+
         # Read data rows starting from row 3 (0-indexed row 2)
         for r in range(3, ws_sku.max_row + 1):
             # For each month block
@@ -1807,7 +1692,7 @@ def process_excel(xlsx_path):
                 if month_idx >= len(month_headers):
                     break
                 mes = month_headers[month_idx]
-                
+
                 # Columns within each block: Produto, SKU, Quantidade, Vendedor, Cliente, Código Cliente
                 # Offsets from base_col (1-indexed): 0, 1, 2, 3, 4, 5
                 produto = ws_sku.cell(r, base_col).value
@@ -1816,14 +1701,14 @@ def process_excel(xlsx_path):
                 vendedor = ws_sku.cell(r, base_col + 3).value
                 cliente = ws_sku.cell(r, base_col + 4).value
                 cod_cliente = ws_sku.cell(r, base_col + 5).value
-                
+
                 # Only add if we have the key fields
                 if produto and sku and cod_cliente:
                     try:
                         quantidade = int(float(quantidade_raw)) if quantidade_raw else 0
                     except:
                         quantidade = 0
-                    
+
                     if quantidade > 0:
                         sku_data.append({
                             'mes': mes,
@@ -1834,7 +1719,7 @@ def process_excel(xlsx_path):
                             'cliente': str(cliente).strip() if cliente else '',
                             'cod_cliente': str(cod_cliente).strip()
                         })
-        
+
         if sku_data:
             df_sku = pd.DataFrame(sku_data)
 
@@ -2145,11 +2030,47 @@ def page_garantias(products_df, df_clients):
             return out
 
         def _render_fila(lista, tk):
-            # tk = prefixo da sub-aba nas keys: a MESMA garantia aparece em várias
-            # sub-abas ao mesmo tempo — sem prefixo, as keys duplicariam e o app cai.
+            # A seleção usa o ID, nunca a posição: filtros, ordenação e mudança
+            # de status não podem abrir o formulário de outro caso por engano.
+            chave_selecao = f"gar_atendimento_{tk}"
             if not lista:
+                st.session_state.pop(chave_selecao, None)
                 st.info("Nenhuma garantia aqui.")
                 return
+            por_id = {g["id"]: g for g in lista}
+            ids = list(por_id)
+            atual = st.session_state.get(chave_selecao)
+            # Reatribuir antes do widget preserva o ID quando a lista de opções
+            # muda no rerun; ID removido pela busca/fila volta ao primeiro válido.
+            st.session_state[chave_selecao] = atual if atual in por_id else ids[0]
+            resumo = [{
+                "ID": g["id"],
+                "Prioridade": f"{_PRIO_ICONE.get(g.get('prioridade', ''), '')}{g.get('prioridade') or 'Normal'}",
+                "Cliente final / cliente": g.get("cliente_final") or g.get("cliente") or "—",
+                "Produto": g.get("produto_nome") or g.get("produto_sku") or "—",
+                "Situação": g.get("status") or "—",
+                "Tempo": _garantia_tempo_rotulo(g),
+            } for g in lista]
+            st.dataframe(pd.DataFrame(resumo), use_container_width=True, hide_index=True,
+                         height=min(315, 35 * len(resumo) + 38))
+            st.caption("Escolha um atendimento abaixo para consultar a ficha ou registrar uma atualização.")
+
+            def _rotulo_atendimento(gid):
+                g = por_id[gid]
+                cliente = g.get("cliente_final") or g.get("cliente") or "Sem cliente"
+                produto = g.get("produto_nome") or g.get("produto_sku") or "Sem produto"
+                prioridade = g.get("prioridade") or "Normal"
+                return f"{gid} · {cliente} · {produto} · {prioridade}"
+
+            escolhido = st.selectbox("Abrir atendimento", ids, key=chave_selecao,
+                                     format_func=_rotulo_atendimento,
+                                     help="Busque pelo protocolo, cliente ou produto. A ficha aberta é a do ID selecionado.")
+            if escolhido not in por_id:
+                st.info("Selecione um atendimento disponível nesta fila.")
+                return
+            # Somente um caso gera widgets. As keys dos formulários continuam
+            # contendo fila + ID, impedindo reaproveitar um submit de outro caso.
+            lista = [por_id[escolhido]]
             for g in lista:
                 dias = f" | {_garantia_tempo_rotulo(g)}"
                 icone = {"Aguardando chegada": "📬", "Em bancada": "🔧", "Aguardando peça": "📦",
@@ -2157,7 +2078,7 @@ def page_garantias(products_df, df_clients):
                          "Concluída": "✅", "Cancelada": "🚫"}.get(g.get("status"), "•")
                 _pri = _PRIO_ICONE.get(g.get("prioridade", ""), "")
                 with st.expander(f"{_pri}{icone} {g['id']} — {g.get('produto_nome','')[:40]} — {g.get('cliente','')[:30]} "
-                                 f"[{g.get('status')}]{dias}"):
+                                 f"[{g.get('status')}]{dias}", expanded=True):
                     _dtc = g.get("data_compra") or ""
                     if _dtc:
                         try:
@@ -3295,6 +3216,337 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
                       "ofertas_mix.csv", "dl_offers")
 
 # ============================================================
+# PAGE: AGENDA COMERCIAL
+# ============================================================
+AGENDA_FILE = os.path.join(os.path.dirname(__file__), 'agenda_comercial.json')
+
+
+def _agenda_now():
+    return datetime.now(ZoneInfo('America/Sao_Paulo'))
+
+
+def _agenda_local_state():
+    if not os.path.exists(AGENDA_FILE):
+        return {'schema_version': 1, 'clientes': {}}
+    with open(AGENDA_FILE, encoding='utf-8') as file:
+        state = json.load(file)
+    agenda.validate_state(state)
+    return state
+
+
+def _agenda_remote_state(token):
+    """GET estrito: erro remoto nunca vira agenda vazia nem fallback local."""
+    url = f'{_GH_API}/repos/{_GH_REPO}/contents/agenda_comercial.json'
+    headers = _gh_headers(token)
+    try:
+        response = requests.get(url, params={'ref': _GH_STATE_BRANCH}, headers=headers, timeout=20)
+        if response.status_code == 404:
+            # GitHub tambem usa 404 para repo sem acesso. Somente um branch
+            # acessivel confirma que este arquivo realmente ainda nao existe.
+            branch = requests.get(f'{_GH_API}/repos/{_GH_REPO}/git/ref/heads/{_GH_STATE_BRANCH}',
+                                  headers=headers, timeout=20)
+            if branch.status_code != 200:
+                raise ValueError('Não foi possível confirmar o acesso à agenda no servidor.')
+            state, sha = {'schema_version': 1, 'clientes': {}}, None
+        elif response.status_code == 200:
+            metadata = response.json()
+            if not isinstance(metadata, dict) or not isinstance(metadata.get('sha'), str) or not metadata['sha']:
+                raise ValueError('A referência do histórico comercial está inválida no servidor.')
+            sha = metadata['sha']
+            if metadata.get('encoding') == 'none':
+                raw_headers = {**headers, 'Accept': 'application/vnd.github.raw+json'}
+                raw = requests.get(url, params={'ref': _GH_STATE_BRANCH}, headers=raw_headers, timeout=60)
+                if raw.status_code != 200:
+                    raise ValueError('Não foi possível ler o histórico comercial completo.')
+                content = raw.content
+            elif metadata.get('encoding') == 'base64' and isinstance(metadata.get('content'), str):
+                content = base64.b64decode(metadata['content'].replace('\n', '').replace('\r', ''), validate=True)
+            else:
+                raise ValueError('O formato do histórico comercial está inválido no servidor.')
+            state = json.loads(content.decode('utf-8'))
+            agenda.validate_state(state)
+        else:
+            raise ValueError('A agenda no servidor está indisponível. Tente novamente; nenhum registro foi substituído.')
+    except requests.RequestException:
+        raise ValueError('Não foi possível conectar à agenda no servidor. Tente novamente.') from None
+    except (UnicodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError('Não foi possível validar a agenda no servidor. O histórico foi preservado.') from error
+    local = _agenda_local_state()
+    remote_events = {event['id']: (cid, event) for cid, record in state['clientes'].items()
+                     for event in record['historico']}
+    unpublished = any(remote_events.get(event['id']) != (cid, event)
+                      for cid, record in local['clientes'].items() for event in record['historico'])
+    if unpublished:
+        raise ValueError('Há histórico comercial local que ainda não está no servidor. '
+                         'Solicite a conciliação antes de registrar novos contatos; nada foi substituído.')
+    return state, sha
+
+
+def _agenda_write_local(state):
+    """Troca atomica; erros chegam ao chamador, sem falso sucesso no modo local."""
+    temp_path = AGENDA_FILE + '.' + uuid.uuid4().hex + '.tmp'
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as file:
+            json.dump(state, file, ensure_ascii=False, separators=(',', ':'))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, AGENDA_FILE)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def load_agenda():
+    token = _gh_token()
+    return _agenda_remote_state(token)[0] if token else _agenda_local_state()
+
+
+def _agenda_authorized_clients():
+    if not st.session_state.get('authenticated') or _session_expired():
+        raise ValueError('Entre novamente para registrar o contato.')
+    error = _refresh_session_access()
+    if error:
+        raise ValueError(error)
+    if st.session_state.get('role') not in ('admin', 'diretor', 'vendedor'):
+        raise ValueError('Seu perfil não possui acesso à agenda comercial.')
+    source = load_data()[0]
+    if source is None:
+        raise ValueError('A base de clientes está indisponível.')
+    scoped = _clients_for_access(source, st.session_state.get('role'), st.session_state.get('vendor_filter'))
+    return scoped[_commercial_active_mask(scoped, load_inactive_clients())].copy()
+
+
+def save_agenda_contact(client_id, *, expected_version, event_id, channel, outcome,
+                        note, next_action, return_date, closed):
+    """Revalida carteira na gravação e nunca anuncia sucesso sem persistir."""
+    allowed = _agenda_authorized_clients()
+    cid = str(client_id).strip()
+    if cid not in set(allowed['id'].astype(str).str.strip()):
+        raise ValueError('Esse cliente não está na sua carteira ativa. Atualize a página.')
+    now = _agenda_now()
+    def apply(state):
+        # Revalida tambem em cada retry, apos a leitura remota potencialmente lenta.
+        current = _agenda_authorized_clients()
+        if cid not in set(current['id'].astype(str).str.strip()):
+            raise ValueError('Esse cliente não está mais na sua carteira ativa. Atualize a página.')
+        return agenda.register_contact(state, client_id=cid, actor=st.session_state['username'], channel=channel,
+            outcome=outcome, note=note, next_action=next_action, return_date=return_date,
+            closed=closed, expected_version=expected_version, event_id=event_id, now=now)
+
+    token = _gh_token()
+    with _GH_WRITE_LOCK:
+        if token:
+            confirmed = None
+            for _ in range(5):
+                state, sha = _agenda_remote_state(token)
+                new_state = apply(state)
+                if new_state == state:
+                    confirmed = state  # mesmo UUID ja persistido: nao duplica o evento.
+                    break
+                body = json.dumps(new_state, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+                done, status = _gh_put_file_status('agenda_comercial.json', body,
+                    'Estado: agenda_comercial.json', _GH_STATE_BRANCH, sha, token)
+                if done:
+                    confirmed = new_state
+                    break
+                if status not in (409, 422):
+                    # O servidor pode ter salvo antes de a conexao cair. Uma nova
+                    # leitura confirma o mesmo evento sem criar outro UUID.
+                    try:
+                        check, _ = _agenda_remote_state(token)
+                        if apply(check) == check:
+                            confirmed = check
+                    except (ValueError, OSError):
+                        pass
+                    break
+            if confirmed is None:
+                raise ValueError('Não foi possível confirmar o salvamento. Seu preenchimento foi mantido; tente novamente.')
+            try:
+                _agenda_write_local(confirmed)
+            except OSError:
+                pass  # remoto ja confirmou: falha no cache local nao invalida o contato.
+            _STATE_RAW_CACHE.pop('agenda_comercial.json', None)
+            return 'Contato salvo com confirmação no servidor.'
+        _agenda_write_local(apply(_agenda_local_state()))
+        _STATE_RAW_CACHE.pop('agenda_comercial.json', None)
+    return 'Contato salvo apenas neste servidor. Sem persistência remota, pode ser perdido no reinício do Cloud.'
+
+
+def page_agenda(df, months):
+    if (not st.session_state.get('authenticated') or _session_expired()
+            or st.session_state.get('role') not in ('admin', 'diretor', 'vendedor')):
+        st.error('A agenda está disponível para o time comercial.')
+        return
+    # Defesa também na entrada da página; não depende apenas da navegação.
+    try:
+        scoped = _clients_for_access(df, st.session_state.get('role'), st.session_state.get('vendor_filter'))
+        state = load_agenda()
+    except ValueError as error:
+        st.error(str(error))
+        return
+    except OSError:
+        st.error('Não foi possível ler o histórico local da agenda. Contate o administrador.')
+        return
+    today = _agenda_now().date()
+    ui.page_hero('COMERCIAL / HOJE', 'Hoje, sua próxima ação.',
+                 'Sua carteira, com uma próxima ação para cada oportunidade.',
+                 f'{today:%d/%m/%Y} · Base mensal até {months[-1] if months else "—"}')
+    if '_agenda_notice' in st.session_state:
+        st.success(st.session_state.pop('_agenda_notice'))
+    if not _gh_token():
+        st.warning('Modo local: os registros ficam apenas neste servidor e podem ser perdidos no reinício do Cloud.')
+
+    work = scoped[_commercial_active_mask(scoped, load_inactive_clients())].copy()
+    if has_full_data_access():
+        options = ['Todas as carteiras'] + _vendor_options(work)
+        vendor = st.selectbox('Acompanhar carteira', options, key='agenda_vendor')
+        if vendor != options[0]:
+            work = work[work['vendor'].astype(str).str.strip() == vendor].copy()
+    if work.empty:
+        st.info('Nenhum cliente ativo nesta carteira. Confira o cadastro e os filtros.')
+        return
+    work['id'] = work['id'].astype(str).str.strip()
+    work['valor_anual'] = work['monthly'].apply(annual_value_estimate)
+    items = agenda.build_agenda(work.to_dict('records'), state, today)
+    counts = {category: sum(item['category'] == category for item in items)
+              for category in ('Atrasados', 'Hoje', 'Recuperação', 'Atenção', 'Programados')}
+    ui.stats_grid(list(zip(
+            ['Retornos atrasados', 'Combinados para hoje', 'Contatos em recuperação', 'Retornos programados'],
+            [counts['Atrasados'], counts['Hoje'], counts['Recuperação'], counts['Programados']],
+            ['Retome estes compromissos', 'Sua agenda do dia', 'Sem retorno já agendado', 'Próximos dias'],
+            ['red', 'teal', 'amber', 'neutral'])))
+    st.caption('Sugestões usam a régua atual de risco e a carteira ativa. Retornos combinados têm preferência; '
+               'encerrar um acompanhamento não inativa o cliente.')
+
+    left, right = st.columns([1.15, 1], gap='large')
+    with left:
+        st.subheader('Onde agir agora')
+        queue_filter = st.radio('Mostrar', ['Prioridades', 'Retornos', 'Programados'], horizontal=True,
+                                key='agenda_queue', label_visibility='collapsed')
+        search = st.text_input('Buscar na agenda', placeholder='Nome, código ou vendedor', key='agenda_search')
+        category_map = {'Prioridades': {'Atrasados', 'Hoje', 'Recuperação', 'Atenção'},
+                        'Retornos': {'Atrasados', 'Hoje'}, 'Programados': {'Programados'}}
+        visible = [item for item in items if item['category'] in category_map[queue_filter]]
+        if search.strip():
+            term = search.strip().casefold()
+            visible = [item for item in visible if term in ' '.join(str(item.get(k, '')) for k in ('name', 'cid', 'vendor')).casefold()]
+        if not visible:
+            st.info('Nenhum contato neste filtro. Você pode escolher qualquer cliente da carteira ao lado.')
+        else:
+            pages = max(1, math.ceil(len(visible) / 5))
+            page_number = st.selectbox('Página da agenda', list(range(1, pages + 1)),
+                                       format_func=lambda n: f'{n} de {pages}', key='agenda_page') if pages > 1 else 1
+            st.caption(f'{len(visible)} contato(s) · até 5 por página')
+            for item in visible[(page_number - 1) * 5:page_number * 5]:
+                with st.container(border=True):
+                    due = f" · {date.fromisoformat(item['due_date']):%d/%m}" if item.get('due_date') else ''
+                    st.markdown(f"<div class='agenda-kicker'>{esc(item['category'] + due)}</div>"
+                                f"<div class='agenda-client'>{esc(item['name'])}</div>", unsafe_allow_html=True)
+                    st.caption(f"{item['cid']} · {item['vendor']}")
+                    st.write(item['reason'])
+                    st.markdown(f"<div class='agenda-next'>{esc(item['suggested_action'])}</div>", unsafe_allow_html=True)
+                    if st.button('Abrir cliente →', key=f"agenda_open_{item['cid']}", use_container_width=True):
+                        st.session_state['agenda_client'] = item['cid']
+
+    with right:
+        st.subheader('Conversa e próximo passo')
+        clients = work.drop_duplicates('id').set_index('id')
+        ids = sorted(clients.index, key=lambda cid: (str(clients.loc[cid, 'name']), cid))
+        current_client = st.session_state.get('agenda_client')
+        # Streamlit 1.41 refaz o widget ao mudar opções: reafirma o ID ainda válido.
+        st.session_state['agenda_client'] = current_client if current_client in ids else (items[0]['cid'] if items else ids[0])
+        cid = st.selectbox('Cliente da carteira', ids,
+                          format_func=lambda value: f"{clients.loc[value, 'name']} · {value}", key='agenda_client')
+        client = clients.loc[cid]
+        record = state['clientes'].get(cid, {})
+        version = record.get('version', 0)
+        prefix = f'agenda_contact_{cid}'
+        version_key = prefix + '_version'
+        event_key = prefix + '_event'
+        st.session_state.setdefault(version_key, version)
+        st.session_state.setdefault(event_key, str(uuid.uuid4()))
+        with st.container(border=True):
+            st.markdown(f"<div class='agenda-client'>{esc(client['name'])}</div>", unsafe_allow_html=True)
+            st.caption(f"Código {cid} · {client.get('state', '—')} · {client['vendor']}")
+            a, b = st.columns(2)
+            a.metric('Situação comercial', str(client['risk']))
+            b.metric('Realizado · últimos 12 meses', fmt_brl(sum(client['monthly'][-12:])))
+            st.caption(f"Última compra: {client.get('last_purchase', '—')}. "
+                       'O realizado acima usa a base mensal; a recência pode incluir a atualização diária.')
+            if record.get('encerrado'):
+                st.info('Acompanhamento encerrado. Registre um novo contato com retorno para retomá-lo.')
+            elif record.get('retorno_em'):
+                st.info(f"Próximo retorno: {date.fromisoformat(record['retorno_em']):%d/%m/%Y} · {record['proxima_acao']}")
+
+        saved_event = any(event['id'] == st.session_state[event_key] for event in record.get('historico', []))
+        conflict = st.session_state[version_key] != version and not saved_event
+        if saved_event:
+            st.success('O contato anterior já está confirmado no histórico. Ele não será registrado novamente.')
+            if st.button('Iniciar outro registro', key=prefix + '_restart'):
+                for key in list(st.session_state):
+                    if key == prefix or str(key).startswith(prefix + '_'):
+                        del st.session_state[key]
+                st.rerun()
+        if conflict:
+            st.warning('Há um contato mais recente para este cliente. Revise o histórico antes de salvar.')
+            if st.button('Revisei: usar histórico atualizado', key=prefix + '_refresh'):
+                st.session_state[version_key] = version
+                st.session_state[event_key] = str(uuid.uuid4())
+                st.rerun()
+        with st.form(prefix, clear_on_submit=False):
+            st.markdown('**Registrar contato**')
+            channel_col, result_col = st.columns(2)
+            channel = channel_col.selectbox('Canal do contato', agenda.CHANNELS, key=prefix + '_channel')
+            outcome = result_col.selectbox('Resultado', agenda.OUTCOMES, index=None,
+                                           placeholder='Selecione o resultado', key=prefix + '_outcome')
+            note = st.text_area('Resumo da conversa', max_chars=2000, height=95,
+                                placeholder='O que foi conversado, interesse e objeções.', key=prefix + '_note')
+            next_action = st.text_input('Próxima ação', max_chars=300,
+                                        placeholder='Ex.: retornar sobre a proposta de lâminas', key=prefix + '_action')
+            return_date = st.date_input('Próximo retorno', value=today + timedelta(days=1),
+                                        min_value=today, format='DD/MM/YYYY', key=prefix + '_date')
+            closed = st.checkbox('Encerrar este acompanhamento', key=prefix + '_closed',
+                                  help='Retira este cliente da agenda automática até um novo registro com retorno. Não altera seu cadastro.')
+            st.caption('Para manter o acompanhamento, informe a próxima ação e a data. '
+                       'Ao encerrar, esses dois campos são desconsiderados. Pedido informado é um registro manual.')
+            if st.form_submit_button('Salvar contato', type='primary', use_container_width=True, disabled=conflict or saved_event):
+                try:
+                    message = save_agenda_contact(cid, expected_version=st.session_state[version_key],
+                        event_id=st.session_state[event_key], channel=channel, outcome=outcome, note=note,
+                        next_action=next_action, return_date=return_date, closed=closed)
+                except (ValueError, OSError) as error:
+                    st.error(str(error))
+                else:
+                    for key in list(st.session_state):
+                        if key == prefix or str(key).startswith(prefix + '_'):
+                            del st.session_state[key]
+                    st.session_state['_agenda_notice'] = message
+                    st.rerun()
+        with st.expander(f"Histórico de contatos · {len(record.get('historico', []))}", expanded=True):
+            history = record.get('historico', [])
+            if not history:
+                st.caption('O primeiro contato registrado aparecerá aqui.')
+            for event in reversed(history[-10:]):
+                when = datetime.fromisoformat(event['em'])
+                st.markdown(f"**{when:%d/%m/%Y %H:%M} · {event['resultado']}**")
+                st.caption(f"{event['user']} · {event['canal']}")
+                if event.get('observacao'):
+                    st.text(event['observacao'])
+                if event.get('retorno_em'):
+                    st.caption(f"Retorno em {date.fromisoformat(event['retorno_em']):%d/%m/%Y}: {event['proxima_acao']}")
+                elif event.get('encerrado'):
+                    st.caption('Acompanhamento encerrado neste registro.')
+                st.divider()
+            if len(history) > 10:
+                st.caption('Exibindo os 10 contatos mais recentes. O histórico completo está na exportação abaixo.')
+            if history:
+                export = pd.DataFrame(history).drop(columns=['id'], errors='ignore')
+                # Observações livres devem abrir como texto no Excel, nunca fórmulas.
+                export = export.map(lambda value: "'" + value if isinstance(value, str)
+                    and value.lstrip().startswith(('=', '+', '-', '@')) else value)
+                _csv_download(export, 'Baixar histórico deste cliente', f'contatos_{cid}.csv', prefix + '_export')
+
+# ============================================================
 # PAGE: VISÃO GERAL
 # ============================================================
 def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_months):
@@ -3898,11 +4150,11 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
         # SEÇÃO: DETALHES DE PRODUTOS COM SKU E QUANTIDADE (from df_sku)
         # ============================================================
         st.subheader("📦 Produtos Comprados (Detalhes por SKU)")
-        
+
         if len(df_sku) > 0:
             # Get products this client bought
             client_skus = df_sku[df_sku['cod_cliente'].astype(str).str.strip() == str(client_id).strip()].copy()
-            
+
             if len(client_skus) > 0:
                 # Aggregate by SKU and product
                 sku_detail = client_skus.groupby(['sku', 'produto']).agg({
@@ -3910,13 +4162,13 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
                     'mes': 'nunique'
                 }).reset_index()
                 sku_detail.columns = ['SKU', 'Produto', 'Qtd Total', 'Meses']
-                
+
                 # Calculate global mix % (from total all quantities across all clients/products)
                 total_all_qty = df_sku['quantidade'].sum()
                 sku_detail['% Mix Global'] = (sku_detail['Qtd Total'] / total_all_qty * 100).round(2) if total_all_qty > 0 else 0
-                
+
                 sku_detail = sku_detail.sort_values('Qtd Total', ascending=False)
-                
+
                 st.dataframe(sku_detail, use_container_width=True, hide_index=True, 
                            height=min(400, 35 * len(sku_detail) + 38))
             else:
@@ -4699,25 +4951,14 @@ def main():
     with st.sidebar:
         # --- User greeting (compact) ---
         _role = st.session_state['role']
-        _role_icon = {'admin': '🔑', 'diretor': '👔', 'garantia': '🔧', 'garantia_master': '🔧'}.get(_role, '👤')
-        _role_label = {'admin': 'Admin', 'diretor': 'Diretora', 'vendedor': 'Vendedor',
-                       'garantia': 'Garantia', 'garantia_master': 'Garantia (Master)'}.get(_role, _role.title())
-        st.markdown(f"""
-        <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px 0">
-            <div style="background:linear-gradient(135deg,#FF6B35,#FF8F5E);border-radius:50%;width:36px;height:36px;
-                        display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">{_role_icon}</div>
-            <div>
-                <div style="font-weight:700;font-size:14px;line-height:1.2">{esc(st.session_state['user_name'])}</div>
-                <div style="font-size:11px;opacity:.6">{_role_label}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        ui.identity(st.session_state['user_name'], _role)
 
         # --- Navigation ---
         if st.session_state["role"] in ("garantia", "garantia_master"):
             pages = {"🔧 Garantias": "garantia"}
         elif has_full_data_access():
             pages = {
+                "◉ Hoje · Agenda": "agenda",
                 "🎛️ Painel do Gestor": "manager",
                 "🔴 Mês ao Vivo": "mesvivo",
                 "✅ Ações do Time": "actions",
@@ -4732,6 +4973,7 @@ def main():
                 pages["⚙️ Admin"] = "admin"
         else:
             pages = {
+                "◉ Hoje · Minha Agenda": "agenda",
                 "✅ Minhas Ações": "actions",
                 "🔴 Meu Mês ao Vivo": "mesvivo",
                 "📊 Minha Visão Geral": "overview",
@@ -4745,121 +4987,60 @@ def main():
 
         st.markdown("---")
 
-        # --- Period Filter: compact multiselects ---
-        st.markdown("**📅 Período**")
+        with st.expander('Período das análises', expanded=pages[selected_page] not in ('agenda', 'garantia')):
+            st.caption('Aplica-se às análises mensais. A agenda usa as datas dos retornos.')
+            # --- Period Filter: compact multiselects ---
+            st.markdown("**📅 Período**")
 
-        # Chart click override indicator
-        chart_override_active = "chart_sel_months" in st.session_state and st.session_state["chart_sel_months"]
-        if chart_override_active:
-            n_chart = len(st.session_state["chart_sel_months"])
-            st.info(f"📊 Seleção via gráfico ({n_chart} {'mês' if n_chart == 1 else 'meses'})")
-            if st.button("✕ Limpar seleção", use_container_width=True, key="clear_chart"):
-                del st.session_state["chart_sel_months"]
-                st.rerun()
+            # Chart click override indicator
+            chart_override_active = "chart_sel_months" in st.session_state and st.session_state["chart_sel_months"]
+            if chart_override_active:
+                n_chart = len(st.session_state["chart_sel_months"])
+                st.info(f"📊 Seleção via gráfico ({n_chart} {'mês' if n_chart == 1 else 'meses'})")
+                if st.button("✕ Limpar seleção", use_container_width=True, key="clear_chart"):
+                    del st.session_state["chart_sel_months"]
+                    st.rerun()
 
-        # Seletor único com presets (substitui os multiselects de ano + mês)
-        _cur_year = all_years_ordered[-1] if all_years_ordered else ""
-        _prev_year = all_years_ordered[-2] if len(all_years_ordered) >= 2 else ""
-        preset_options = ["Últimos 12 meses"]
-        if _cur_year:
-            preset_options.append(f"Este ano ({_cur_year})")
-        preset_options += ["Últimos 6 meses", "Últimos 3 meses", "Este mês"]
-        if _prev_year:
-            preset_options.append(f"Ano passado ({_prev_year})")
-        preset_options += ["Tudo (desde o início)", "Personalizado…"]
+            # Seletor único com presets (substitui os multiselects de ano + mês)
+            _cur_year = all_years_ordered[-1] if all_years_ordered else ""
+            _prev_year = all_years_ordered[-2] if len(all_years_ordered) >= 2 else ""
+            preset_options = ["Últimos 12 meses"]
+            if _cur_year:
+                preset_options.append(f"Este ano ({_cur_year})")
+            preset_options += ["Últimos 6 meses", "Últimos 3 meses", "Este mês"]
+            if _prev_year:
+                preset_options.append(f"Ano passado ({_prev_year})")
+            preset_options += ["Tudo (desde o início)", "Personalizado…"]
 
-        sel_preset = st.selectbox("Período", preset_options, key="global_preset",
-                                  label_visibility="collapsed")
+            sel_preset = st.selectbox("Período", preset_options, key="global_preset",
+                                      label_visibility="collapsed")
 
-        # Modo avançado: escolher anos e meses manualmente
-        selected_years, selected_month_nums = [], []
-        if sel_preset == "Personalizado…":
-            selected_years = st.multiselect(
-                "Ano",
-                options=all_years_ordered,
-                default=[_best_default_year] if _best_default_year else [],
-                key="global_years"
-            )
-            selected_month_nums = st.multiselect(
-                "Mês (1-12)",
-                options=_existing_month_nums,
-                default=_existing_month_nums,
-                key="global_months"
-            )
+            # Modo avançado: escolher anos e meses manualmente
+            selected_years, selected_month_nums = [], []
+            if sel_preset == "Personalizado…":
+                selected_years = st.multiselect(
+                    "Ano",
+                    options=all_years_ordered,
+                    default=[_best_default_year] if _best_default_year else [],
+                    key="global_years"
+                )
+                selected_month_nums = st.multiselect(
+                    "Mês (1-12)",
+                    options=_existing_month_nums,
+                    default=_existing_month_nums,
+                    key="global_months"
+                )
 
-        # --- Compact CSS to reduce multiselect pill size ---
-        st.markdown("""
-        <style>
-        /* Smaller multiselect pills */
-        section[data-testid="stSidebar"] span[data-baseweb="tag"] {
-            font-size: 12px !important;
-            padding: 2px 6px !important;
-            margin: 1px !important;
-            height: auto !important;
-            line-height: 1.3 !important;
-        }
-        section[data-testid="stSidebar"] span[data-baseweb="tag"] span {
-            font-size: 12px !important;
-        }
-        /* Smaller multiselect input */
-        section[data-testid="stSidebar"] [data-baseweb="select"] {
-            font-size: 13px !important;
-        }
-        section[data-testid="stSidebar"] .stMultiSelect > label {
-            font-size: 13px !important;
-            margin-bottom: 2px !important;
-        }
-        /* Compact radio buttons */
-        section[data-testid="stSidebar"] .stRadio > div {
-            gap: 0px !important;
-        }
-        section[data-testid="stSidebar"] .stRadio > div > label {
-            padding: 4px 0 !important;
-            font-size: 14px !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+            st.divider()
 
-        st.markdown("---")
 
-        # --- Data summary ---
-        # status EFETIVO (mesmo recorte do gestor/overview): ativo = 'Ativo' na
-        # planilha E fora dos inativados do app; saúde calculada SÓ nos ativos
-        _inat_card = df_clients['id'].astype(str).str.strip().isin(load_inactive_clients())
-        _df_card = df_clients[(df_clients['status'] == 'Ativo') & ~_inat_card]
-        _n_ativos = len(_df_card)
-        _n_inativos = len(df_clients) - _n_ativos
-        _risk_counts = _df_card['risk'].value_counts() if 'risk' in _df_card.columns else {}
-        _healthy = _risk_counts.get('Saudável', 0)
-        _attention = _risk_counts.get('Atenção', 0)
-        _recovery = _risk_counts.get('Recuperação', 0)
+        with st.expander('Resumo da carteira'):
+            _card_active = df_clients[_commercial_active_mask(df_clients, load_inactive_clients())]
+            st.write(f"{len(_card_active)} clientes ativos · {len(df_clients) - len(_card_active)} inativos / outros")
+            _risk_counts = _card_active['risk'].value_counts() if 'risk' in _card_active.columns else {}
+            st.caption(f"Saudáveis: {_risk_counts.get('Saudável', 0)} · Atenção: {_risk_counts.get('Atenção', 0)} · Recuperação: {_risk_counts.get('Recuperação', 0)}")
+        st.divider()
 
-        st.markdown(f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
-                <div style="font-size:18px;font-weight:800;color:#FF6B35">{_n_ativos}</div>
-                <div style="font-size:10px;opacity:.5">Clientes Ativos</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
-                <div style="font-size:18px;font-weight:800;color:#9E9E9E">{_n_inativos}</div>
-                <div style="font-size:10px;opacity:.5">Inativos</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
-                <div style="font-size:18px;font-weight:800;color:#4CAF50">{_healthy}</div>
-                <div style="font-size:10px;opacity:.5">Saudáveis</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center">
-                <div style="font-size:18px;font-weight:800;color:#FFC107">{_attention}</div>
-                <div style="font-size:10px;opacity:.5">Atenção</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 8px;text-align:center;grid-column:1/-1">
-                <div style="font-size:18px;font-weight:800;color:#F44336">{_recovery}</div>
-                <div style="font-size:10px;opacity:.5">Recuperação</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
 
         if st.button("🚪 Sair", use_container_width=True):
             _strip_stale_auth_params()
@@ -4901,21 +5082,9 @@ def main():
     sel_indices_sorted = sorted(sel_indices)
     sel_months = [months[i] for i in sel_indices_sorted]
 
-    # Header banner
-    st.markdown(f"""
-    <div class="propetz-header">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-            <div>
-                <h1 style="color:#fff !important; margin:0; font-size:26px; font-weight:800">PROPETZ</h1>
-                <div class="sub">Painel Estratégico - Dashboard Comercial</div>
-            </div>
-            <div style="text-align:right;font-size:12px;opacity:.7">
-                <div>Dados: {esc(months[0])} a {esc(months[-1])}</div>
-                <div>{len(df_clients)} clientes</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    if pages[selected_page] != 'agenda':
+        ui.page_hero('PROPETZ BI', 'Clareza para decidir.', 'Distribuição e assistência em um só lugar.',
+                     f'Dados: {months[0]} a {months[-1]} · {len(df_clients)} clientes')
 
     # Alerta de persistência: sem GITHUB_TOKEN, inativações/usuários/logs são
     # perdidos quando o servidor reinicia. Visível só para admin/diretor.
@@ -4949,7 +5118,9 @@ def main():
         st.session_state[_page_log_key] = True
         log_page_view(st.session_state.get("username", ""), selected_page)
 
-    if page == "garantia":
+    if page == "agenda":
+        page_agenda(df_clients, months)
+    elif page == "garantia":
         page_garantias(df_products, df_clients)
     elif page == "mesvivo":
         page_mes_vivo()

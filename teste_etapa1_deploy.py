@@ -103,6 +103,10 @@ class SafeDeployTests(unittest.TestCase):
         self.write("teste_etapa2_fixture.py", "assert True\n")
         self.write("agenda_comercial.py", "MODULE = 'agenda'\n")
         self.write("ui_propetz.py", "MODULE = 'visual'\n")
+        self.write("ficha_cliente_dados.py", "MODULE = 'client_metrics'\n")
+        self.write("ficha_cliente_ui.py", "MODULE = 'client_view'\n")
+        self.write("teste_ficha_cliente_dados.py", "assert True\n")
+        self.write("teste_ficha_cliente_interface.py", "assert True\n")
         self.write("painel_garantias.py", "MODULE = 'warranty_view'\n")
         self.write("garantia_analytics.py", "MODULE = 'warranty_metrics'\n")
         self.write("teste_painel_garantias.py", "assert True\n")
@@ -120,6 +124,8 @@ class SafeDeployTests(unittest.TestCase):
         files = self.git(self.remote, "ls-tree", "-r", "--name-only", "main").stdout.splitlines()
         self.assertIn("teste_etapa1_fixture.py", files)
         for included in ("teste_etapa2_fixture.py", "agenda_comercial.py", "ui_propetz.py",
+                         "ficha_cliente_dados.py", "ficha_cliente_ui.py",
+                         "teste_ficha_cliente_dados.py", "teste_ficha_cliente_interface.py",
                          "painel_garantias.py", "garantia_analytics.py", "teste_painel_garantias.py",
                          "exportacao_csv.py", "teste_exportacao_csv.py"):
             self.assertIn(included, files)

@@ -236,27 +236,21 @@ class CommercialRegression(unittest.TestCase):
                          {'Cliente sintético 1', 'Cliente sintético 2', 'Cliente sintético 3'})
 
     def render_recurrence(self, monthly, selected):
-        row = client(1, 'Ativo', 'Saudável', 0)
-        row['monthly'] = monthly
-        months = [f'mês {i + 1}' for i in range(len(monthly))]
-        self.ns['page_clients'](pd.DataFrame([row]), pd.DataFrame(), months, {},
-                                selected, [months[i] for i in selected])
-        return [text for text in self.ui.texts if 'BAIXA RECORRÊNCIA' in text]
+        # A ficha agora tem uma janela própria. Esta regressão cobre o helper
+        # de recorrência que continua atendendo às demais páginas comerciais.
+        return self.ns['_commercial_period_recurrence'](monthly, selected)
 
-    def test_single_month_with_purchase_is_not_low_recurrence(self):
-        alerts = self.render_recurrence([20000] * 60, [59])
-        self.assertEqual(self.ui.metrics['Frequência no Período'][0], '1/1')
-        self.assertEqual(alerts, [])
+    def test_single_selected_month_does_not_use_all_historical_months(self):
+        self.assertEqual(self.render_recurrence([20000] * 60, [59]), (1, 1))
 
-    def test_true_low_recurrence_uses_selected_months_in_alert_and_kpi(self):
-        alerts = self.render_recurrence([20000] + [0] * 59, [0, 10, 20, 30])
-        self.assertEqual(self.ui.metrics['Frequência no Período'][0], '1/4')
-        self.assertEqual(len(alerts), 1)
-        self.assertIn('1 de 4 meses do período selecionado (25%)', alerts[0])
+    def test_recurrence_numerator_and_denominator_use_same_selected_months(self):
+        monthly = [20000] + [0] * 59
+        self.assertEqual(self.render_recurrence(monthly, [0, 10, 20, 30]), (1, 4))
+        self.assertEqual(self.render_recurrence(monthly, [10, 20, 30]), (0, 3))
+        self.assertEqual(self.render_recurrence(monthly, [0, 0, 10, -1, 60]), (1, 2))
 
-    def test_empty_selection_has_no_division_by_zero_or_low_recurrence(self):
-        self.assertEqual(self.render_recurrence([20000] * 12, []), [])
-        self.assertEqual(self.ui.metrics['Frequência no Período'][0], '0/0')
+    def test_empty_selection_has_no_historical_fallback(self):
+        self.assertEqual(self.render_recurrence([20000] * 12, []), (0, 0))
 
     def test_annual_estimate_keeps_active_month_assumption_and_historical_fallback(self):
         estimate = self.ns['annual_value_estimate']

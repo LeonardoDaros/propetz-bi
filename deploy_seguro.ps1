@@ -37,6 +37,8 @@ try {
     # Nunca preparar automaticamente users.yaml, estado, secrets ou Backups.
     $script:DeployFiles = @(
         'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py',
+        'ficha_cliente_dados.py', 'ficha_cliente_ui.py',
+        'teste_ficha_cliente_dados.py', 'teste_ficha_cliente_interface.py',
         'painel_garantias.py', 'garantia_analytics.py', 'teste_painel_garantias.py',
         'exportacao_csv.py', 'teste_exportacao_csv.py',
         'requirements.txt', '.gitignore',

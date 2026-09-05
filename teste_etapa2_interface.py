@@ -108,7 +108,10 @@ class AgendaInterfaceTests(unittest.TestCase):
         self.assertEqual(record['historico'][0]['user'], 'pessoa_teste')
         self.assertTrue(any('salvo apenas' in msg.value for msg in self.at.success))
         self.assertFalse(any('agenda_open_001' == button.key for button in self.at.button))
-        self.assertTrue(any('01' in str(exp.label) or '1' in str(exp.label) for exp in self.at.expander))
+        self.at.radio(key='_ficha_001_view').set_value('Contatos').run()
+        self.assertEqual(len(self.at.exception), 0)
+        self.assertTrue(any('Histórico de contatos · 1' == exp.label for exp in self.at.expander))
+        self.assertTrue(any('Solicitou proposta de lâminas.' == text.value for text in self.at.text))
 
     def test_validation_error_keeps_the_typed_note(self):
         self.at.text_area(key='agenda_contact_001_note').input('Texto ainda não salvo')
@@ -123,7 +126,8 @@ class AgendaInterfaceTests(unittest.TestCase):
         self.assertTrue(self.state()['clientes']['001']['encerrado'])
         self.assertIsNone(self.state()['clientes']['001']['retorno_em'])
         self.assertEqual(len(self.at.selectbox(key='agenda_client').options), 3)
-        self.assertTrue(any('encerrado' in message.value for message in self.at.info))
+        self.assertTrue(any('acompanhamento encerrado' in message.value.casefold()
+                            for message in [*self.at.info, *self.at.markdown]))
 
     def test_external_contact_requires_review_before_saving(self):
         new_state = agenda.register_contact(self.state(), client_id='001', actor='outro_usuario',

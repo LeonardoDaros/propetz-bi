@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import agenda_comercial as agenda
 import ui_propetz as ui
 import painel_garantias
+import ficha_cliente_ui
 from exportacao_csv import csv_excel_bytes
 from collections import defaultdict
 from datetime import datetime, timedelta, date
@@ -3240,7 +3241,135 @@ def save_agenda_contact(client_id, *, expected_version, event_id, channel, outco
     return 'Contato salvo apenas neste servidor. Sem persistência remota, pode ser perdido no reinício do Cloud.'
 
 
-def page_agenda(df, months):
+def _agenda_capture_draft(cid):
+    """Estado independente dos widgets: sobrevive à navegação na mesma sessão."""
+    prefix = f'agenda_contact_{cid}'
+    draft = st.session_state.setdefault('_agenda_drafts', {}).setdefault(cid, {})
+    for field in ('channel', 'outcome', 'note', 'action', 'date', 'closed', 'version', 'event'):
+        key = prefix + '_' + field
+        if key in st.session_state:
+            draft[field] = st.session_state[key]
+
+
+def _agenda_clear_draft(cid):
+    prefix = f'agenda_contact_{cid}'
+    st.session_state.setdefault('_agenda_drafts', {}).pop(cid, None)
+    for key in list(st.session_state):
+        if key == prefix or str(key).startswith(prefix + '_'):
+            del st.session_state[key]
+
+
+def _agenda_apply_suggestion(cid, action):
+    # Pauta sugerida não descreve uma conversa que ainda não aconteceu.
+    st.session_state[f'agenda_contact_{cid}_action'] = str(action)[:300]
+    _agenda_capture_draft(cid)
+
+
+def _render_agenda_history(record, cid):
+    history = record.get('historico', [])
+    with st.expander(f'Histórico de contatos · {len(history)}', expanded=True):
+        if not history:
+            st.caption('O primeiro contato registrado aparecerá aqui.')
+        for event in reversed(history[-10:]):
+            when = datetime.fromisoformat(event['em'])
+            st.write(f"{when:%d/%m/%Y %H:%M} · {event['resultado']}")
+            st.caption(f"{event['user']} · {event['canal']}")
+            if event.get('observacao'):
+                st.text(event['observacao'])
+            if event.get('retorno_em'):
+                st.text(f"Retorno em {date.fromisoformat(event['retorno_em']):%d/%m/%Y}: {event['proxima_acao']}")
+            elif event.get('encerrado'):
+                st.caption('Acompanhamento encerrado neste registro.')
+            st.divider()
+        if len(history) > 10:
+            st.caption('Exibindo os 10 contatos mais recentes. A exportação contém o histórico completo.')
+        if history:
+            export = pd.DataFrame(history).drop(columns=['id'], errors='ignore')
+            _csv_download(export, 'Baixar histórico deste cliente', f'contatos_{cid}.csv',
+                          f'agenda_contact_{cid}_export')
+
+
+def _render_agenda_contact(cid, record, today):
+    prefix = f'agenda_contact_{cid}'
+    draft = st.session_state.setdefault('_agenda_drafts', {}).setdefault(cid, {})
+    defaults = dict(channel=agenda.CHANNELS[0], outcome=None, note='', action='',
+                    date=today + timedelta(days=1), closed=False,
+                    version=record.get('version', 0), event=str(uuid.uuid4()))
+    for field, default in defaults.items():
+        draft.setdefault(field, default)
+        st.session_state[prefix + '_' + field] = draft[field]
+    saved_event = any(event['id'] == draft['event'] for event in record.get('historico', []))
+    conflict = draft['version'] != record.get('version', 0) and not saved_event
+    if saved_event:
+        st.success('O contato anterior já está confirmado no histórico. Ele não será registrado novamente.')
+        st.button('Iniciar outro registro', key=prefix + '_restart',
+                  on_click=_agenda_clear_draft, args=(cid,))
+    if conflict:
+        st.warning('Há um contato mais recente para este cliente. Revise o histórico antes de salvar.')
+        if st.button('Revisei: usar histórico atualizado', key=prefix + '_refresh'):
+            draft['version'] = record.get('version', 0)
+            draft['event'] = str(uuid.uuid4())
+            st.rerun()
+    st.markdown('<div id="registro-contato" style="scroll-margin-top:5rem"></div>', unsafe_allow_html=True)
+    st.subheader('Registrar contato')
+    st.caption('Rascunho preservado ao navegar nesta sessão. Salve para registrar no histórico.')
+    callback = dict(on_change=_agenda_capture_draft, args=(cid,))
+    channel = st.selectbox('Canal do contato', agenda.CHANNELS, key=prefix + '_channel', **callback)
+    outcome = st.selectbox('Resultado', agenda.OUTCOMES, index=None,
+                           placeholder='Selecione o resultado', key=prefix + '_outcome', **callback)
+    note = st.text_area('Resumo da conversa', max_chars=2000, height=110,
+                       placeholder='O que foi conversado, interesse e objeções.', key=prefix + '_note', **callback)
+    next_action = st.text_input('Próxima ação', max_chars=300,
+                               placeholder='Ex.: retornar sobre a proposta de lâminas', key=prefix + '_action', **callback)
+    return_date = st.date_input('Próximo retorno', format='DD/MM/YYYY', key=prefix + '_date', **callback)
+    closed = st.checkbox('Encerrar este acompanhamento', key=prefix + '_closed',
+                         help='Retira da agenda automática até um novo contato com retorno. Não altera o cadastro.', **callback)
+    st.caption('Para manter o acompanhamento, informe a próxima ação e a data. '
+               'Ao encerrar, esses dois campos são desconsiderados. Pedido informado é um registro manual.')
+    if st.button('Salvar contato', key=prefix + '_save', type='primary',
+                 use_container_width=True, disabled=conflict or saved_event):
+        _agenda_capture_draft(cid)
+        try:
+            message = save_agenda_contact(cid, expected_version=draft['version'], event_id=draft['event'],
+                channel=channel, outcome=outcome, note=note, next_action=next_action,
+                return_date=return_date, closed=closed)
+        except (ValueError, OSError) as error:
+            st.error(str(error))
+        else:
+            _agenda_clear_draft(cid)
+            st.session_state['_agenda_notice'] = message
+            st.rerun()
+
+
+def _render_client_dossier(client, df_sku, months, state, *, active=True):
+    cid = str(client['id']).strip()
+    record = state['clientes'].get(cid, {}) if state is not None else {}
+    if '_agenda_notice' in st.session_state:
+        st.success(st.session_state.pop('_agenda_notice'))
+    if active and state is not None:
+        st.markdown('[Ir para o registro do contato ↓](#registro-contato)')
+    details, contact = st.columns([2.2, 1], gap='large') if active else (st.container(), None)
+    with details:
+        ficha_cliente_ui.render_ficha_cliente(client, df_sku, months, record, _agenda_now().date(),
+            active=active, history_available=state is not None,
+            on_suggest=lambda action: _agenda_apply_suggestion(cid, action),
+            render_history=_render_agenda_history)
+    if contact is not None:
+        with contact, st.container(border=True):
+            if state is None:
+                st.warning('O histórico de contatos está indisponível. A consulta de compras continua disponível; '
+                           'tente novamente antes de registrar um contato.')
+            else:
+                if not _gh_token():
+                    st.warning('Modo local: os registros podem ser perdidos no reinício do Cloud.')
+                _render_agenda_contact(cid, record, _agenda_now().date())
+
+
+def _remember_ficha_client(widget_key):
+    st.session_state['_ficha_selected_client'] = st.session_state[widget_key]
+
+
+def page_agenda(df, months, df_sku=None):
     if (not st.session_state.get('authenticated') or _session_expired()
             or st.session_state.get('role') not in ('admin', 'diretor', 'vendedor')):
         st.error('A agenda está disponível para o time comercial.')
@@ -3248,22 +3377,23 @@ def page_agenda(df, months):
     # Defesa também na entrada da página; não depende apenas da navegação.
     try:
         scoped = _clients_for_access(df, st.session_state.get('role'), st.session_state.get('vendor_filter'))
-        state = load_agenda()
     except ValueError as error:
         st.error(str(error))
         return
+    try:
+        state = load_agenda()
+    except ValueError as error:
+        st.warning(str(error))
+        state = None
     except OSError:
-        st.error('Não foi possível ler o histórico local da agenda. Contate o administrador.')
-        return
+        st.warning('Não foi possível ler o histórico local da agenda. Contate o administrador.')
+        state = None
     today = _agenda_now().date()
     ui.page_hero('COMERCIAL / HOJE', 'Hoje, sua próxima ação.',
                  'Sua carteira, com uma próxima ação para cada oportunidade.',
                  f'{today:%d/%m/%Y} · Base mensal até {months[-1] if months else "—"}')
     if '_agenda_notice' in st.session_state:
         st.success(st.session_state.pop('_agenda_notice'))
-    if not _gh_token():
-        st.warning('Modo local: os registros ficam apenas neste servidor e podem ser perdidos no reinício do Cloud.')
-
     work = scoped[_commercial_active_mask(scoped, load_inactive_clients())].copy()
     if has_full_data_access():
         options = ['Todas as carteiras'] + _vendor_options(work)
@@ -3275,144 +3405,63 @@ def page_agenda(df, months):
         return
     work['id'] = work['id'].astype(str).str.strip()
     work['valor_anual'] = work['monthly'].apply(annual_value_estimate)
-    items = agenda.build_agenda(work.to_dict('records'), state, today)
+    items = agenda.build_agenda(work.to_dict('records'), state, today) if state is not None else []
     counts = {category: sum(item['category'] == category for item in items)
               for category in ('Atrasados', 'Hoje', 'Recuperação', 'Atenção', 'Programados')}
     ui.stats_grid(list(zip(
             ['Retornos atrasados', 'Combinados para hoje', 'Contatos em recuperação', 'Retornos programados'],
-            [counts['Atrasados'], counts['Hoje'], counts['Recuperação'], counts['Programados']],
+            [counts['Atrasados'], counts['Hoje'], counts['Recuperação'], counts['Programados']] if state is not None else ['—'] * 4,
             ['Retome estes compromissos', 'Sua agenda do dia', 'Sem retorno já agendado', 'Próximos dias'],
             ['red', 'teal', 'amber', 'neutral'])))
     st.caption('Sugestões usam a régua atual de risco e a carteira ativa. Retornos combinados têm preferência; '
                'encerrar um acompanhamento não inativa o cliente.')
 
-    left, right = st.columns([1.15, 1], gap='large')
-    with left:
-        st.subheader('Onde agir agora')
-        queue_filter = st.radio('Mostrar', ['Prioridades', 'Retornos', 'Programados'], horizontal=True,
-                                key='agenda_queue', label_visibility='collapsed')
-        search = st.text_input('Buscar na agenda', placeholder='Nome, código ou vendedor', key='agenda_search')
+    with st.expander('Onde agir agora · prioridades e retornos', expanded=True):
+        filter_col, search_col = st.columns(2)
+        queue_filter = filter_col.radio('Mostrar', ['Prioridades', 'Retornos', 'Programados'],
+                                        horizontal=True, key='agenda_queue', label_visibility='collapsed')
+        search = search_col.text_input('Buscar na agenda', placeholder='Nome, código ou vendedor', key='agenda_search')
         category_map = {'Prioridades': {'Atrasados', 'Hoje', 'Recuperação', 'Atenção'},
                         'Retornos': {'Atrasados', 'Hoje'}, 'Programados': {'Programados'}}
         visible = [item for item in items if item['category'] in category_map[queue_filter]]
         if search.strip():
             term = search.strip().casefold()
             visible = [item for item in visible if term in ' '.join(str(item.get(k, '')) for k in ('name', 'cid', 'vendor')).casefold()]
-        if not visible:
-            st.info('Nenhum contato neste filtro. Você pode escolher qualquer cliente da carteira ao lado.')
+        if state is None:
+            st.info('A fila de retornos depende do histórico de contatos. Enquanto isso, consulte as compras de um cliente abaixo.')
+        elif not visible:
+            st.info('Nenhum contato neste filtro. Você pode consultar qualquer cliente ativo da carteira abaixo.')
         else:
-            pages = max(1, math.ceil(len(visible) / 5))
+            pages = max(1, math.ceil(len(visible) / 3))
             page_number = st.selectbox('Página da agenda', list(range(1, pages + 1)),
                                        format_func=lambda n: f'{n} de {pages}', key='agenda_page') if pages > 1 else 1
-            st.caption(f'{len(visible)} contato(s) · até 5 por página')
-            for item in visible[(page_number - 1) * 5:page_number * 5]:
-                with st.container(border=True):
+            st.caption(f'{len(visible)} contato(s) · até 3 por página')
+            cards = st.columns(3)
+            for column, item in zip(cards, visible[(page_number - 1) * 3:page_number * 3]):
+                with column, st.container(border=True):
                     due = f" · {date.fromisoformat(item['due_date']):%d/%m}" if item.get('due_date') else ''
                     st.markdown(f"<div class='agenda-kicker'>{esc(item['category'] + due)}</div>"
                                 f"<div class='agenda-client'>{esc(item['name'])}</div>", unsafe_allow_html=True)
                     st.caption(f"{item['cid']} · {item['vendor']}")
                     st.write(item['reason'])
-                    st.markdown(f"<div class='agenda-next'>{esc(item['suggested_action'])}</div>", unsafe_allow_html=True)
                     if st.button('Abrir cliente →', key=f"agenda_open_{item['cid']}", use_container_width=True):
                         st.session_state['agenda_client'] = item['cid']
+                        st.session_state['_ficha_selected_client'] = item['cid']
 
-    with right:
-        st.subheader('Conversa e próximo passo')
-        clients = work.drop_duplicates('id').set_index('id')
-        ids = sorted(clients.index, key=lambda cid: (str(clients.loc[cid, 'name']), cid))
+    if work['id'].duplicated().any():
+        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
+        return
+    clients = work.set_index('id', drop=False)
+    ids = sorted(clients.index, key=lambda cid: (str(clients.loc[cid, 'name']), cid))
+    current_client = st.session_state.get('_ficha_selected_client')
+    if current_client not in ids:
         current_client = st.session_state.get('agenda_client')
-        # Streamlit 1.41 refaz o widget ao mudar opções: reafirma o ID ainda válido.
-        st.session_state['agenda_client'] = current_client if current_client in ids else (items[0]['cid'] if items else ids[0])
-        cid = st.selectbox('Cliente da carteira', ids,
-                          format_func=lambda value: f"{clients.loc[value, 'name']} · {value}", key='agenda_client')
-        client = clients.loc[cid]
-        record = state['clientes'].get(cid, {})
-        version = record.get('version', 0)
-        prefix = f'agenda_contact_{cid}'
-        version_key = prefix + '_version'
-        event_key = prefix + '_event'
-        st.session_state.setdefault(version_key, version)
-        st.session_state.setdefault(event_key, str(uuid.uuid4()))
-        with st.container(border=True):
-            st.markdown(f"<div class='agenda-client'>{esc(client['name'])}</div>", unsafe_allow_html=True)
-            st.caption(f"Código {cid} · {client.get('state', '—')} · {client['vendor']}")
-            a, b = st.columns(2)
-            a.metric('Situação comercial', str(client['risk']))
-            b.metric('Realizado · últimos 12 meses', fmt_brl(sum(client['monthly'][-12:])))
-            st.caption(f"Última compra: {client.get('last_purchase', '—')}. "
-                       'O realizado acima usa a base mensal; a recência pode incluir a atualização diária.')
-            if record.get('encerrado'):
-                st.info('Acompanhamento encerrado. Registre um novo contato com retorno para retomá-lo.')
-            elif record.get('retorno_em'):
-                st.info(f"Próximo retorno: {date.fromisoformat(record['retorno_em']):%d/%m/%Y} · {record['proxima_acao']}")
-
-        saved_event = any(event['id'] == st.session_state[event_key] for event in record.get('historico', []))
-        conflict = st.session_state[version_key] != version and not saved_event
-        if saved_event:
-            st.success('O contato anterior já está confirmado no histórico. Ele não será registrado novamente.')
-            if st.button('Iniciar outro registro', key=prefix + '_restart'):
-                for key in list(st.session_state):
-                    if key == prefix or str(key).startswith(prefix + '_'):
-                        del st.session_state[key]
-                st.rerun()
-        if conflict:
-            st.warning('Há um contato mais recente para este cliente. Revise o histórico antes de salvar.')
-            if st.button('Revisei: usar histórico atualizado', key=prefix + '_refresh'):
-                st.session_state[version_key] = version
-                st.session_state[event_key] = str(uuid.uuid4())
-                st.rerun()
-        with st.form(prefix, clear_on_submit=False):
-            st.markdown('**Registrar contato**')
-            channel_col, result_col = st.columns(2)
-            channel = channel_col.selectbox('Canal do contato', agenda.CHANNELS, key=prefix + '_channel')
-            outcome = result_col.selectbox('Resultado', agenda.OUTCOMES, index=None,
-                                           placeholder='Selecione o resultado', key=prefix + '_outcome')
-            note = st.text_area('Resumo da conversa', max_chars=2000, height=95,
-                                placeholder='O que foi conversado, interesse e objeções.', key=prefix + '_note')
-            next_action = st.text_input('Próxima ação', max_chars=300,
-                                        placeholder='Ex.: retornar sobre a proposta de lâminas', key=prefix + '_action')
-            return_date = st.date_input('Próximo retorno', value=today + timedelta(days=1),
-                                        min_value=today, format='DD/MM/YYYY', key=prefix + '_date')
-            closed = st.checkbox('Encerrar este acompanhamento', key=prefix + '_closed',
-                                  help='Retira este cliente da agenda automática até um novo registro com retorno. Não altera seu cadastro.')
-            st.caption('Para manter o acompanhamento, informe a próxima ação e a data. '
-                       'Ao encerrar, esses dois campos são desconsiderados. Pedido informado é um registro manual.')
-            if st.form_submit_button('Salvar contato', type='primary', use_container_width=True, disabled=conflict or saved_event):
-                try:
-                    message = save_agenda_contact(cid, expected_version=st.session_state[version_key],
-                        event_id=st.session_state[event_key], channel=channel, outcome=outcome, note=note,
-                        next_action=next_action, return_date=return_date, closed=closed)
-                except (ValueError, OSError) as error:
-                    st.error(str(error))
-                else:
-                    for key in list(st.session_state):
-                        if key == prefix or str(key).startswith(prefix + '_'):
-                            del st.session_state[key]
-                    st.session_state['_agenda_notice'] = message
-                    st.rerun()
-        with st.expander(f"Histórico de contatos · {len(record.get('historico', []))}", expanded=True):
-            history = record.get('historico', [])
-            if not history:
-                st.caption('O primeiro contato registrado aparecerá aqui.')
-            for event in reversed(history[-10:]):
-                when = datetime.fromisoformat(event['em'])
-                st.markdown(f"**{when:%d/%m/%Y %H:%M} · {event['resultado']}**")
-                st.caption(f"{event['user']} · {event['canal']}")
-                if event.get('observacao'):
-                    st.text(event['observacao'])
-                if event.get('retorno_em'):
-                    st.caption(f"Retorno em {date.fromisoformat(event['retorno_em']):%d/%m/%Y}: {event['proxima_acao']}")
-                elif event.get('encerrado'):
-                    st.caption('Acompanhamento encerrado neste registro.')
-                st.divider()
-            if len(history) > 10:
-                st.caption('Exibindo os 10 contatos mais recentes. O histórico completo está na exportação abaixo.')
-            if history:
-                export = pd.DataFrame(history).drop(columns=['id'], errors='ignore')
-                # Observações livres devem abrir como texto no Excel, nunca fórmulas.
-                export = export.map(lambda value: "'" + value if isinstance(value, str)
-                    and value.lstrip().startswith(('=', '+', '-', '@')) else value)
-                _csv_download(export, 'Baixar histórico deste cliente', f'contatos_{cid}.csv', prefix + '_export')
+    st.session_state['agenda_client'] = current_client if current_client in ids else (items[0]['cid'] if items else ids[0])
+    cid = st.selectbox('Cliente da carteira', ids,
+                      format_func=lambda value: f"{clients.loc[value, 'name']} · {value}", key='agenda_client',
+                      on_change=_remember_ficha_client, args=('agenda_client',))
+    st.session_state['_ficha_selected_client'] = cid
+    _render_client_dossier(clients.loc[cid], df_sku, months, state)
 
 # ============================================================
 # PAGE: VISÃO GERAL
@@ -3859,190 +3908,65 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
 # PAGE: CLIENTES
 # ============================================================
 def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months):
-    st.header("👤 Visão por Cliente")
-
-    search = st.text_input("🔍 Buscar cliente (nome, estado, código ou vendedor)", key="client_search")
-
-    filtered = df.copy()
-    if search:
-        s = search.lower()
-        filtered = filtered[
-            filtered['name'].str.lower().str.contains(s, na=False) |
-            filtered['state'].str.lower().str.contains(s, na=False) |
-            filtered['id'].str.contains(s, na=False) |
-            filtered['vendor'].str.lower().str.contains(s, na=False)
-        ]
-
-    # Period-based revenue
-    def _period_sum(m):
-        return sum(m[i] for i in sel_indices_sorted if i < len(m))
-
-    filtered = filtered.copy()
-    filtered['total_rev'] = filtered['monthly'].apply(_period_sum)
-    filtered = filtered.sort_values('total_rev', ascending=False)
-
-    # Client selector
-    client_names = filtered['name'].tolist()
-
-    if not client_names:
-        st.info("Nenhum cliente encontrado.")
+    if (not st.session_state.get('authenticated') or _session_expired()
+            or st.session_state.get('role') not in ('admin', 'diretor', 'vendedor')):
+        st.error('A ficha de clientes está disponível para o time comercial.')
         return
-
-    # Show table
-    period_label = f"{sel_months[0]} - {sel_months[-1]}" if len(sel_months) > 1 else (sel_months[0] if sel_months else "")
-    display_df = filtered[['name','state','vendor','status','risk','total_rev','last_purchase']].head(50).copy()
-    rev_col = f'Receita ({period_label})'
-    display_df.columns = ['Cliente','UF','Vendedor','Status','Risco',rev_col,'Última Compra']
-    display_df['Vendedor'] = display_df['Vendedor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
-
-    show_money_table(display_df, [rev_col], use_container_width=True, height=300, hide_index=True)
-
-    st.divider()
-
-    # Client detail
-    selected = st.selectbox("Selecione um cliente para ver detalhes:", client_names[:100], key="client_select")
-
-    if selected:
-        c = df[df['name'] == selected].iloc[0]
-        client_id = str(c['id']).strip()
-        monthly = c['monthly']
-        period_total = _period_sum(monthly)
-        total = sum(monthly)
-        months_active, n_sel = _commercial_period_recurrence(monthly, sel_indices_sorted)
-        avg_ticket = period_total / months_active if months_active > 0 else 0
-
-        st.subheader(f"📋 {c['name']}")
-
-        meta_cols = st.columns(6)
-        meta_cols[0].markdown(f"**UF:** {c['state']}")
-        meta_cols[1].markdown(f"**ID:** {c['id']}")
-        meta_cols[2].markdown(f"**Vendedor:** {c['vendor'].replace(' Propetz Distribuição','').replace(' La Maison Propetz','')}")
-        meta_cols[3].markdown(f"**Status:** {status_badge(c['status'])}", unsafe_allow_html=True)
-        meta_cols[4].markdown(f"**Risco:** {risk_badge(c['risk'])}", unsafe_allow_html=True)
-        if c['credit_limit'] > 0:
-            meta_cols[5].markdown(f"**Limite:** {fmt_brl_full(c['credit_limit'])}")
-
-        # KPIs
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Receita no Período", fmt_brl(period_total), f"Total histórico: {fmt_brl(total)}")
-        k2.metric("Ticket Médio/Mês", fmt_brl(avg_ticket), f"{months_active} meses com compra")
-        k3.metric("Última Compra", c['last_purchase'], f"{c['months_since']} meses atrás" if c['months_since'] < 999 else "Nunca")
-        k4.metric("Frequência no Período", f"{months_active}/{n_sel}", f"{months_active/n_sel*100:.0f}% dos meses" if n_sel > 0 else "")
-
-        # Trend chart
-        ma3 = []
-        for i in range(len(monthly)):
-            if i < 2:
-                ma3.append(monthly[i])
-            else:
-                ma3.append((monthly[i] + monthly[i-1] + monthly[i-2]) / 3)
-
-        # Color bars: selected period = bold, others = subtle
-        bar_colors = ['#3b82f6' if i in set(sel_indices_sorted) else 'rgba(59,130,246,0.2)' for i in range(len(monthly))]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=months, y=monthly, name='Receita Mensal', marker_color=bar_colors))
-        fig.add_trace(go.Scatter(x=months, y=ma3, name='Média Móvel (3m)', line=dict(color='#f97316', width=2), mode='lines'))
-        fig.update_layout(title="Evolução de Vendas", height=400,
-                         template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-                         yaxis=dict(gridcolor='#e2e8f0'),
-                         hovermode='x unified')
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Yearly comparison
-        col1, col2 = st.columns(2)
-        yt = c['yearly_totals'] if isinstance(c['yearly_totals'], dict) else {}
-        am = c['avg_month'] if isinstance(c['avg_month'], dict) else {}
-
-        with col1:
-            years = ['2021','2022','2023','2024','2025','2026']
-            fig_yr = px.bar(x=years, y=[yt.get(y,0) for y in years],
-                           title="Receita por Ano", color_discrete_sequence=['#3b82f6'])
-            fig_yr.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-                                showlegend=False, height=300, yaxis=dict(gridcolor='#e2e8f0'))
-            st.plotly_chart(fig_yr, use_container_width=True)
-
-        with col2:
-            fig_am = px.bar(x=['2021','2022','2023','2024','2025'], y=[am.get(y,0) for y in ['2021','2022','2023','2024','2025']],
-                           title="Ticket Médio por Ano", color_discrete_sequence=['#22c55e'])
-            fig_am.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-                                showlegend=False, height=300, yaxis=dict(gridcolor='#e2e8f0'))
-            st.plotly_chart(fig_am, use_container_width=True)
-
-        # Client insights
-        st.subheader("🧠 Insights do Cliente")
-
-        last6 = sum(monthly[-6:])
-        prev6 = sum(monthly[-12:-6])
-        if prev6 > 0:
-            change = (last6 - prev6) / prev6
-            if change < -0.3:
-                st.markdown(insight_html('danger', 'QUEDA ACENTUADA',
-                    f"Volume caiu {abs(change)*100:.0f}% nos últimos 6 meses ({fmt_brl(last6)}) vs anteriores ({fmt_brl(prev6)}).",
-                    "Ação urgente: agendar visita ou ligação para entender a causa."), unsafe_allow_html=True)
-            elif change < -0.1:
-                st.markdown(insight_html('warning', 'TENDÊNCIA DE QUEDA',
-                    f"Volume reduziu {abs(change)*100:.0f}% nos últimos 6 meses.",
-                    "Monitorar e investigar causas possíveis."), unsafe_allow_html=True)
-            elif change > 0.2:
-                st.markdown(insight_html('success', 'CRESCIMENTO',
-                    f"Volume cresceu {change*100:.0f}%! De {fmt_brl(prev6)} para {fmt_brl(last6)}.",
-                    "Aproveitar momento para ampliar mix de produtos."), unsafe_allow_html=True)
-
-        if n_sel > 0 and months_active / n_sel < 0.3 and total > 10000:
-            st.markdown(insight_html('warning', 'BAIXA RECORRÊNCIA',
-                f"Comprou em apenas {months_active} de {n_sel} meses do período selecionado "
-                f"({months_active/n_sel*100:.0f}%), mas tem faturamento histórico relevante.",
-                "Oportunidade: criar rotina de compras recorrentes."), unsafe_allow_html=True)
-
-        if c['months_since'] >= 3 and c['months_since'] < 6 and c['status'] == 'Ativo':
-            st.markdown(insight_html('warning', 'ATENÇÃO - INATIVIDADE',
-                f"Cliente ativo sem compras há {c['months_since']} meses. Última: {c['last_purchase']}.",
-                "Entrar em contato antes que vire churn."), unsafe_allow_html=True)
-        elif c['months_since'] >= 6 and c['status'] == 'Ativo':
-            st.markdown(insight_html('danger', 'URGENTE - RECUPERAÇÃO',
-                f"Cliente ativo sem compras há {c['months_since']} meses! Risco iminente de perda.",
-                "Ação imediata: contato direto + oferta especial."), unsafe_allow_html=True)
-
-        avg_all = df[df['status']=='Ativo']['monthly'].apply(sum).mean() / len(months)
-        if avg_ticket > avg_all * 2:
-            st.markdown(insight_html('success', 'CLIENTE PREMIUM',
-                f"Ticket médio de {fmt_brl(avg_ticket)} é {avg_ticket/avg_all:.1f}x acima da média ({fmt_brl(avg_all)}).",
-                "Cliente estratégico: garantir atendimento diferenciado."), unsafe_allow_html=True)
-
-        if c['status'] == 'Ativo' and c['months_since'] < 3 and (prev6 == 0 or (last6 - prev6) / prev6 >= -0.1):
-            st.markdown(insight_html('success', 'CLIENTE SAUDÁVEL',
-                f"Cliente ativo com compras recentes ({c['last_purchase']}). Manter relacionamento.",
-                "Explorar oportunidades de mix de produtos."), unsafe_allow_html=True)
-
-        # ============================================================
-        # SEÇÃO: DETALHES DE PRODUTOS COM SKU E QUANTIDADE (from df_sku)
-        # ============================================================
-        st.subheader("📦 Produtos Comprados (Detalhes por SKU)")
-
-        if len(df_sku) > 0:
-            # Get products this client bought
-            client_skus = df_sku[df_sku['cod_cliente'].astype(str).str.strip() == str(client_id).strip()].copy()
-
-            if len(client_skus) > 0:
-                # Aggregate by SKU and product
-                sku_detail = client_skus.groupby(['sku', 'produto']).agg({
-                    'quantidade': 'sum',
-                    'mes': 'nunique'
-                }).reset_index()
-                sku_detail.columns = ['SKU', 'Produto', 'Qtd Total', 'Meses']
-
-                # Calculate global mix % (from total all quantities across all clients/products)
-                total_all_qty = df_sku['quantidade'].sum()
-                sku_detail['% Mix Global'] = (sku_detail['Qtd Total'] / total_all_qty * 100).round(2) if total_all_qty > 0 else 0
-
-                sku_detail = sku_detail.sort_values('Qtd Total', ascending=False)
-
-                st.dataframe(sku_detail, use_container_width=True, hide_index=True, 
-                           height=min(400, 35 * len(sku_detail) + 38))
-            else:
-                st.info("Nenhum dado de quantidade por SKU disponível para este cliente.")
-        else:
-            st.info("Dados de SKU não carregados.")
+    try:
+        scoped = _clients_for_access(df, st.session_state.get('role'), st.session_state.get('vendor_filter'))
+    except ValueError as error:
+        st.error(str(error))
+        return
+    st.header('Clientes · conheça antes de conversar')
+    search = st.text_input('Buscar cliente (nome, estado, código ou vendedor)', key='client_search')
+    filtered = scoped.copy()
+    filtered['id'] = filtered['id'].astype(str).str.strip()
+    if search.strip():
+        term = search.strip()
+        matches = pd.Series(False, index=filtered.index)
+        for field in ('name', 'state', 'id', 'vendor'):
+            matches |= filtered[field].astype(str).str.contains(term, case=False, regex=False, na=False)
+        filtered = filtered[matches].copy()
+    if filtered.empty:
+        st.info('Nenhum cliente encontrado na sua carteira com esse filtro.')
+        return
+    if filtered['id'].duplicated().any():
+        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
+        return
+    inactive_ids = load_inactive_clients()
+    filtered['_active'] = _commercial_active_mask(filtered, inactive_ids)
+    filtered['total_rev'] = filtered['monthly'].apply(
+        lambda values: sum(values[i] for i in sel_indices_sorted if i < len(values)))
+    filtered = filtered.sort_values(['total_rev', 'id'], ascending=[False, True])
+    with st.expander(f'Diretório da carteira · {len(filtered)} cliente(s)', expanded=False):
+        period_label = f'{sel_months[0]} a {sel_months[-1]}' if sel_months else 'sem período'
+        st.caption(f'Ordenação deste diretório: receita de {period_label}. A ficha abaixo tem seu próprio período.')
+        display = filtered[['id', 'name', 'state', 'vendor', 'status', 'risk', 'total_rev']].head(50).copy()
+        manually_inactive = display['id'].isin({str(value).strip() for value in inactive_ids})
+        display.loc[manually_inactive, 'status'] = 'Inativo'
+        display.columns = ['Código', 'Cliente', 'UF', 'Vendedor', 'Cadastro', 'Situação comercial', 'Receita no período']
+        show_money_table(display, ['Receita no período'], use_container_width=True, height=300, hide_index=True)
+        if len(filtered) > 50:
+            st.caption('Tabela: primeiros 50. O seletor abaixo permite abrir todos os resultados da busca.')
+    clients = filtered.set_index('id', drop=False)
+    ids = list(clients.index)
+    current = st.session_state.get('_ficha_selected_client')
+    if current not in ids:
+        current = st.session_state.get('client_select')
+    st.session_state['client_select'] = current if current in ids else ids[0]
+    cid = st.selectbox('Selecione um cliente para ver detalhes:', ids,
+        format_func=lambda value: f"{clients.loc[value, 'name']} · {value} · {clients.loc[value, 'state']}", key='client_select',
+        on_change=_remember_ficha_client, args=('client_select',))
+    st.session_state['_ficha_selected_client'] = cid
+    try:
+        state = load_agenda()
+    except (ValueError, OSError) as error:
+        st.warning(f'Não foi possível carregar os contatos. {error}')
+        state = None
+    selected_client = clients.loc[cid].copy()
+    if cid in {str(value).strip() for value in inactive_ids}:
+        selected_client['status'] = 'Inativo'
+    _render_client_dossier(selected_client, df_sku, months, state, active=bool(selected_client['_active']))
 
 # ============================================================
 # PAGE: MIX
@@ -4856,7 +4780,8 @@ def main():
         st.markdown("---")
 
         with st.expander('Período das análises', expanded=pages[selected_page] not in ('agenda', 'garantia')):
-            st.caption('Aplica-se às análises mensais. A agenda usa as datas dos retornos.')
+            st.caption('Aplica-se às análises mensais e ao diretório de clientes. '
+                       'A ficha tem seu próprio período; a agenda usa as datas dos retornos.')
             # --- Period Filter: compact multiselects ---
             st.markdown("**📅 Período**")
 
@@ -4987,7 +4912,7 @@ def main():
         log_page_view(st.session_state.get("username", ""), selected_page)
 
     if page == "agenda":
-        page_agenda(df_clients, months)
+        page_agenda(df_clients, months, df_sku)
     elif page == "garantia":
         page_garantias(df_products, df_clients)
     elif page == "mesvivo":

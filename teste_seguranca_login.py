@@ -110,3 +110,4 @@ chk("{esc(st.session_state['user_name'])}" in src, "nome do usuario escapado no 
 chk("{esc(months[0])}" in src, "rotulos de mes escapados no banner (achado auditoria)")
 
 print("\n" + ("SEGURANCA OK — 8 frentes cobertas" if falhas == 0 else f"{falhas} FALHAS"))
+sys.exit(1 if falhas else 0)

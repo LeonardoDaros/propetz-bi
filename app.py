@@ -398,6 +398,61 @@ def has_full_data_access():
     """Returns True for admin and diretor roles (see all data, no vendor filter)."""
     return st.session_state.get('role') in ('admin', 'diretor')
 
+def _vendor_options(df_clients):
+    """Carteiras válidas vêm da base já normalizada pelo carregador."""
+    return sorted({str(v).strip() for v in df_clients['vendor'].dropna() if str(v).strip()})
+
+def _access_configuration_error(role, vendor_filter, vendor_options=None):
+    """Falha fechada: papel desconhecido ou vendedor sem carteira não vê dados."""
+    if role not in ('admin', 'diretor', 'vendedor', 'garantia', 'garantia_master'):
+        return "Seu perfil de acesso precisa ser revisado pelo administrador."
+    if role == 'vendedor':
+        if not isinstance(vendor_filter, str) or not vendor_filter.strip():
+            return "Sua carteira não está configurada. Solicite o ajuste ao administrador."
+        if vendor_options is not None and vendor_filter.strip() not in vendor_options:
+            return "Sua carteira não foi encontrada na base atual. Solicite o ajuste ao administrador."
+    return None
+
+def _clients_for_access(df_clients, role, vendor_filter):
+    error = _access_configuration_error(role, vendor_filter, _vendor_options(df_clients))
+    if error:
+        raise ValueError(error)
+    if role == 'vendedor':
+        return df_clients[df_clients['vendor'].fillna('').astype(str).str.strip() == vendor_filter.strip()].copy()
+    return df_clients.copy()
+
+def _refresh_session_access():
+    """Revalida o cadastro local a cada interação, inclusive após troca de carteira."""
+    try:
+        user = load_users()['users'].get(st.session_state.get('username'))
+        if not isinstance(user, dict):
+            return "Seu cadastro não está mais disponível. Contate o administrador."
+        st.session_state['role'] = user.get('role')
+        st.session_state['vendor_filter'] = user.get('vendor_filter')
+        st.session_state['user_name'] = user.get('name') or st.session_state.get('username', '')
+    except (OSError, yaml.YAMLError, KeyError, TypeError, AttributeError):
+        return "Não foi possível validar seu cadastro. Tente novamente ou contate o administrador."
+    return _access_configuration_error(user.get('role'), user.get('vendor_filter'))
+
+def _show_access_denied(message):
+    st.error(message)
+    if st.button("Sair e usar outra conta", key="access_denied_logout"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        _strip_stale_auth_params()
+        st.rerun()
+
+def _new_user_error(users, username, name, password, role, vendor_filter, vendor_options):
+    if not username.strip() or not name.strip() or not password:
+        return "Preencha usuário, nome e senha."
+    if username.strip().lower() in {str(key).strip().lower() for key in users['users']}:
+        return "Esse usuário já existe. Use as opções de alteração abaixo."
+    if len(password) < 12:
+        return "Use uma senha com pelo menos 12 caracteres."
+    if role not in ('vendedor', 'admin'):
+        return "Selecione um papel válido."
+    return _access_configuration_error(role, vendor_filter, vendor_options)
+
 def can_approve_inactivations():
     """Somente admin aprova/inativa/reativa direto. Diretor e vendedor SOLICITAM
     (a diretora conhece a carteira de todos, então sugere; o admin decide)."""
@@ -621,6 +676,132 @@ def can_edit_garantia_fechada():
     corrigida ou cancelada pelo MASTER da garantia (Jackson) ou pelo admin.
     Marcos/Pedro operam o dia a dia; correção pós-fechamento é controlada."""
     return st.session_state.get('role') in ('admin', 'garantia_master')
+
+def _garantias_visiveis(registros, role):
+    """Um único recorte para fila, reincidência, indicadores e exportação."""
+    if role not in ('admin', 'diretor', 'garantia', 'garantia_master'):
+        return []
+    ve_canceladas = role in ('admin', 'diretor', 'garantia_master')
+    return [g for g in registros if isinstance(g, dict)
+            and (ve_canceladas or g.get("status") != "Cancelada")]
+
+
+def _garantia_data(valor):
+    try:
+        return datetime.strptime(str(valor)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _garantia_tempo_info(g, hoje=None):
+    """Uma definição de duração para card e painel, sem criar datas de reabertura."""
+    hoje = hoje or date.today()
+    abertura = _garantia_data(g.get("criado_em"))
+    chegada = _garantia_data(g.get("data_chegada"))
+    envio = _garantia_data(g.get("data_envio"))
+    confirmacao = _garantia_data(g.get("concluido_em"))
+    encerrado = g.get("status") in STATUS_FINALIZADOS + ["Confirmado — aguardando R$ frete"]
+    inicio = chegada or abertura
+    if encerrado:
+        fim = envio or confirmacao
+        if not fim:
+            return {"dias": None, "base": None,
+                    "rotulo": "duração encerrada — data final não informada"}
+        if chegada and envio:
+            rotulo = "na empresa (chegada→envio)"
+            base = "chegada_envio"
+        elif envio:
+            rotulo = "da abertura ao envio"
+            base = "abertura_envio"
+        elif chegada:
+            rotulo = "da chegada à confirmação"
+            base = "chegada_confirmacao"
+        else:
+            rotulo = "da abertura à confirmação"
+            base = "abertura_confirmacao"
+    else:
+        # Reabrir preserva as datas anteriores no registro. O status atual
+        # manda: envio/confirmação antigos não podem congelar um caso ativo.
+        # Sem data própria do novo ciclo, explicita a data inicial registrada.
+        fim = hoje
+        rotulo = "na empresa" if chegada else "desde a abertura"
+        base = "chegada_hoje" if chegada else "abertura_hoje"
+        if envio or confirmacao:
+            rotulo = ("desde a chegada registrada" if chegada else "desde a abertura") + " (caso ativo)"
+    if not inicio:
+        return {"dias": None, "base": None,
+                "rotulo": "duração indisponível — data inicial não informada"}
+    if fim < inicio or inicio > hoje or fim > hoje:
+        return {"dias": None, "base": None,
+                "rotulo": "duração indisponível — confira as datas"}
+    return {"dias": (fim - inicio).days, "base": base, "rotulo": rotulo}
+
+
+def _garantia_tempo_rotulo(g, hoje=None):
+    info = _garantia_tempo_info(g, hoje)
+    return f"{info['dias']}d {info['rotulo']}" if info["dias"] is not None else info["rotulo"]
+
+
+def _garantia_periodo_vendas(meta):
+    """Faixa mensal declarada pela Base Mãe, limitada à publicação da referência.
+
+    A publicação limita a comparação, mas não prova a cobertura da coleta.
+    Sem metadados válidos, não inventa uma janela de 12 meses ancorada em hoje.
+    """
+    try:
+        limites = str(meta.get("periodo", "")).strip().lower().split(" a ")
+        if len(limites) != 2:
+            return None
+        meses = []
+        for limite in limites:
+            mes, ano = limite.strip().split("/")
+            if len(ano) == 4:
+                if not ano.isdigit() or not 2000 <= int(ano) <= 2099:
+                    return None
+                ano = ano[-2:]
+            if len(ano) != 2 or not ano.isdigit():
+                return None
+            # O parser compartilhado aceita rótulos com ano de dois dígitos.
+            ym = _parse_label_ym(f"{mes}/{ano}")
+            if ym is None:
+                return None
+            meses.append(ym)
+        inicio = datetime(*meses[0], 1)
+        ano_fim, mes_fim = meses[1]
+        fim = datetime(ano_fim + (mes_fim == 12), mes_fim % 12 + 1, 1)
+        publicado = datetime.strptime(str(meta.get("gerado_em", "")), "%Y-%m-%d %H:%M")
+        # Registros e publicação têm precisão de minuto; inclui esse minuto.
+        fim = min(fim, publicado + timedelta(minutes=1))
+        return (inicio, fim) if inicio < fim else None
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _garantias_no_periodo_vendas(registros, periodo):
+    if not periodo:
+        return []
+    inicio, fim = periodo
+    resultado = []
+    for g in registros:
+        if not isinstance(g, dict) or g.get("status") == "Cancelada":
+            continue
+        try:
+            criado = datetime.fromisoformat(str(g.get("criado_em", "")))
+            if inicio <= criado < fim:
+                resultado.append(g)
+        except (TypeError, ValueError):
+            continue
+    return resultado
+
+
+def _garantia_relacao_vendas(casos, unidades):
+    """Relação descritiva; denominador ausente/inválido não vira zero por cento."""
+    try:
+        unidades = float(unidades)
+        return casos / unidades if math.isfinite(unidades) and unidades > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
 
 def load_garantias():
     data = _read_state_json("garantias.json", GARANTIAS_FILE, {"garantias": []})
@@ -1812,7 +1993,9 @@ def page_garantias(products_df, df_clients):
     def _sku_de(opt):
         return opt.split(" — ")[0].strip() if opt else ""
 
-    garantias = load_garantias()
+    # O recorte antecede qualquer uso: nem indicadores, alertas ou CSV podem
+    # revelar um registro que o papel não pode consultar na fila.
+    garantias = _garantias_visiveis(load_garantias(), st.session_state.get("role"))
     tab_novo, tab_bancada, tab_painel = st.tabs(["📥 Nova Garantia", "🔨 Bancada / Fila", "📊 Painel"])
 
     # ---------------- NOVA GARANTIA ----------------
@@ -1968,12 +2151,7 @@ def page_garantias(products_df, df_clients):
                 st.info("Nenhuma garantia aqui.")
                 return
             for g in lista:
-                dias = ""
-                try:
-                    d0 = datetime.strptime(g["criado_em"][:10], "%Y-%m-%d")
-                    dias = f" | {(datetime.now() - d0).days}d na casa"
-                except Exception:
-                    pass
+                dias = f" | {_garantia_tempo_rotulo(g)}"
                 icone = {"Aguardando chegada": "📬", "Em bancada": "🔧", "Aguardando peça": "📦",
                          "Confirmado — aguardando R$ frete": "🚚",
                          "Concluída": "✅", "Cancelada": "🚫"}.get(g.get("status"), "•")
@@ -2260,28 +2438,29 @@ def page_garantias(products_df, df_clients):
             mes_atual = datetime.now().strftime("%Y-%m")
             custo_mes = sum(g["custo_total"] for g in concl if str(g.get("concluido_em", "")).startswith(mes_atual))
 
-            def _dtd(s):
-                try:
-                    return datetime.strptime(str(s)[:10], "%Y-%m-%d")
-                except Exception:
-                    return None
-            # tempo na casa: chegada -> envio (dado novo); fallback: registro -> conclusão
-            t_casa = [(_dtd(g.get("data_envio")) - _dtd(g.get("data_chegada"))).days
-                      for g in concl
-                      if _dtd(g.get("data_envio")) and _dtd(g.get("data_chegada"))
-                      and _dtd(g.get("data_envio")) >= _dtd(g.get("data_chegada"))]
-            if t_casa:
-                _t_label, _t_valor = "⏱️ Tempo na casa (chegada→envio)", f"{sum(t_casa)/len(t_casa):.0f} dias"
-            else:
-                t_reg = [(_dtd(g.get("concluido_em")) - _dtd(g.get("criado_em"))).days
-                         for g in concl if _dtd(g.get("concluido_em")) and _dtd(g.get("criado_em"))]
-                _t_label = "⏱️ Tempo médio (registro→conclusão)"
-                _t_valor = f"{sum(t_reg)/len(t_reg):.0f} dias" if t_reg else "—"
+            # Mesmas datas/validações dos cards. Não mistura bases diferentes
+            # na média; prioriza chegada→envio, depois usa a base disponível.
+            tempos = [_garantia_tempo_info(g) for g in concl]
+            bases_tempo = {
+                "chegada_envio": "⏱️ Tempo na empresa (chegada→envio)",
+                "chegada_confirmacao": "⏱️ Tempo médio (chegada→confirmação)",
+                "abertura_envio": "⏱️ Tempo médio (abertura→envio)",
+                "abertura_confirmacao": "⏱️ Tempo médio (abertura→confirmação)",
+            }
+            base_tempo = next((base for base in bases_tempo
+                               if any(t["base"] == base and t["dias"] is not None for t in tempos)), None)
+            dias_validos = [t["dias"] for t in tempos
+                           if t["base"] == base_tempo and t["dias"] is not None]
+            _t_label = bases_tempo.get(base_tempo, "⏱️ Tempo médio (datas válidas)")
+            _t_valor = f"{sum(dias_validos)/len(dias_validos):.0f} dias" if dias_validos else "—"
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("🔴 Em aberto", len(atng))
             k2.metric(_t_label, _t_valor)
             k3.metric("💸 Custo no mês", fmt_brl(custo_mes))
             k4.metric("📋 Total histórico", len(garantias))
+            st.caption(f"Prazo calculado com {len(dias_validos)} de {len(concl)} casos encerrados "
+                       "operacionalmente. A média usa apenas casos com a mesma base de datas; "
+                       "datas ausentes, inconsistentes ou futuras não entram.")
             st.divider()
             dfg = pd.DataFrame(garantias)
             col1, col2 = st.columns(2)
@@ -2299,17 +2478,53 @@ def page_garantias(products_df, df_clients):
                         use_container_width=True, hide_index=True)
                 else:
                     st.caption("Ainda sem diagnósticos concluídos.")
-            st.markdown("**Produtos-problema** (casos × vendas 12m em todos os canais)")
-            agg = dfg.groupby(["produto_sku", "produto_nome"]).agg(
-                Casos=("id", "count"), Custo=("custo_total", "sum")).reset_index()
-            agg["Vendas 12m"] = agg["produto_sku"].map(lambda s: vendas_map.get(str(s).strip(), 0))
-            agg["Taxa garantia"] = agg.apply(
-                lambda r: (r["Casos"] / r["Vendas 12m"]) if r["Vendas 12m"] else None, axis=1)
-            agg = agg.sort_values("Casos", ascending=False).head(20)
-            disp = agg.rename(columns={"produto_sku": "SKU", "produto_nome": "Produto"})
-            disp["Taxa garantia"] = disp["Taxa garantia"].apply(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
-            show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
-                             height=min(420, 35 * len(disp) + 38))
+            st.markdown("**Casos registrados × unidades vendidas** (todos os canais)")
+            periodo_vendas = _garantia_periodo_vendas(meta)
+            if not periodo_vendas:
+                st.info("Relação indisponível: a referência de vendas não informa um período "
+                        "e uma data de publicação válidos.")
+            else:
+                inicio_ref, fim_ref = periodo_vendas
+                ultimo_instante = fim_ref - timedelta(minutes=1)
+                st.caption(f"Vendas: {meta['periodo']} · Referência publicada em {meta['gerado_em']}. "
+                           f"Casos registrados de {inicio_ref:%d/%m/%Y} até "
+                           f"{ultimo_instante:%d/%m/%Y %H:%M}, sem canceladas.")
+                st.caption("O mês final pode ser parcial. A publicação não comprova a cobertura "
+                           "integral das vendas ou dos registros de assistência. Esta relação "
+                           "não representa a taxa real de defeito dos produtos vendidos.")
+                casos_ref = _garantias_no_periodo_vendas(garantias, periodo_vendas)
+                if not casos_ref:
+                    st.info("Nenhum caso não cancelado com data de registro válida nessa referência.")
+                else:
+                    # O SKU é a identidade: nomes antigos/variantes não podem
+                    # dividir o numerador e repetir o mesmo denominador de vendas.
+                    nomes_sku = {}
+                    for _, p in products_df.iterrows():
+                        if pd.notna(p.get("code")) and pd.notna(p.get("name")):
+                            sku, nome = str(p["code"]).strip(), str(p["name"]).strip()
+                            if sku and nome:
+                                nomes_sku.setdefault(sku, nome)
+                    for g in casos_ref:
+                        sku = str(g.get("produto_sku") or "").strip()
+                        nome = str(g.get("produto_nome") or "").strip()
+                        if sku and nome:
+                            nomes_sku.setdefault(sku, nome)
+                    df_ref = pd.DataFrame(casos_ref)
+                    df_ref["produto_sku"] = df_ref["produto_sku"].fillna("").astype(str).str.strip()
+                    agg = df_ref.groupby("produto_sku").agg(
+                        Casos=("id", "count"), Custo=("custo_total", "sum")).reset_index()
+                    agg.insert(1, "produto_nome", agg["produto_sku"].map(nomes_sku).fillna("Sem nome informado"))
+                    agg["Unidades vendidas"] = agg["produto_sku"].map(
+                        lambda s: vendas_map.get(str(s).strip()))
+                    agg["Casos / unidades"] = agg.apply(
+                        lambda r: _garantia_relacao_vendas(r["Casos"], r["Unidades vendidas"]), axis=1)
+                    agg = agg.sort_values("Casos", ascending=False).head(20)
+                    disp = agg.rename(columns={"produto_sku": "SKU", "produto_nome": "Produto"})
+                    disp["Casos / unidades"] = disp["Casos / unidades"].apply(
+                        lambda v: f"{v:.1%}" if pd.notna(v) else "—")
+                    show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
+                                     height=min(420, 35 * len(disp) + 38))
+                    st.caption("— indica ausência de uma quantidade vendida válida para calcular a relação.")
             if len(concl):
                 st.markdown("**Peças e serviços mais usados** (planejar reposição / carga da bancada)")
                 cons = defaultdict(lambda: {"qtd": 0, "custo": 0.0})
@@ -2348,7 +2563,7 @@ def page_garantias(products_df, df_clients):
                              "Custo total": g.get("custo_total", 0), "Resultado": g.get("resultado"),
                              "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
                              "Registrado por": g.get("criado_por")})
-            _csv_download(pd.DataFrame(flat), "⬇️ Baixar base completa de garantias (Excel/CSV)",
+            _csv_download(pd.DataFrame(flat), "⬇️ Baixar garantias deste perfil (Excel/CSV)",
                           "garantias.csv", "dl_gar")
 
 # ============================================================
@@ -2540,6 +2755,31 @@ def page_mes_vivo():
         _mes_vivo_tabela_clientes(top[:30])
 
 
+def _commercial_active_mask(df, inactive_ids):
+    """Carteira ativa: status Ativo na planilha e sem inativação no app."""
+    inactive_ids = {str(cid).strip() for cid in inactive_ids}
+    return df['status'].eq('Ativo') & ~df['id'].astype(str).str.strip().isin(inactive_ids)
+
+
+def _commercial_reactivation_candidates(df, inactive_ids):
+    """O app só desfaz sua própria inativação; status da planilha exige correção na fonte."""
+    inactive_ids = {str(cid).strip() for cid in inactive_ids}
+    return df[df['status'].eq('Ativo')
+              & df['id'].astype(str).str.strip().isin(inactive_ids)].copy()
+
+
+def _commercial_period_recurrence(monthly, selected_indices):
+    """Conta compras e meses dentro do mesmo período selecionado."""
+    indices = {i for i in selected_indices if 0 <= i < len(monthly)}
+    return sum(1 for i in indices if monthly[i] > 0), len(indices)
+
+
+def _commercial_estimate_caption():
+    st.caption("Estimativa anual = média dos meses com compra nos últimos 12 meses × 12; "
+               "sem compras nesses 12 meses, usa a média histórica dos meses com compra. "
+               "Pressupõe compra mensal; pode superar o faturamento realizado no ano.")
+
+
 def page_manager(df, months, df_sku, products_df):
     st.header("🎛️ Painel do Gestor")
     st.caption(f"Acompanhamento objetivo do canal Distribuição — dados até **{months[-1]}**.")
@@ -2595,8 +2835,7 @@ def page_manager(df, months, df_sku, products_df):
                "Carteira = clientes ATIVOS (inativados ficam fora da conta).")
     # carteira ativa: mesmo recorte do quadro de recuperações logo abaixo —
     # sem isso, cliente inativado seguia inflando o nº de clientes do vendedor
-    _df_cart = df[(df['status'] == 'Ativo')
-                  & ~df['id'].astype(str).str.strip().isin(load_inactive_clients())]
+    _df_cart = df[_commercial_active_mask(df, load_inactive_clients())].copy()
     rows = []
     for v, g in _df_cart.groupby('vendor'):
         if not v:
@@ -2619,15 +2858,15 @@ def page_manager(df, months, df_sku, products_df):
         show_money_table(vend_df, ['Receita no Mês', 'Média 3m Anteriores', 'R$ em Risco (ano)'],
                          use_container_width=True, hide_index=True,
                          height=min(350, 35 * len(vend_df) + 38))
+    _commercial_estimate_caption()
 
     st.divider()
 
     # ---- LINHA 3: ONDE AGIR AGORA ----
     st.subheader("🚨 Maiores Recuperações em Jogo")
     st.caption("Top 10 clientes ativos esfriando, da base inteira, por receita anual em jogo — cobre isso nas reuniões com o time.")
-    risky = df[(df['risk'].isin(['Recuperação', 'Atenção'])) & (df['status'] == 'Ativo')].copy()
+    risky = _df_cart[_df_cart['risk'].isin(['Recuperação', 'Atenção'])].copy()
     risky['_cid'] = risky['id'].astype(str).str.strip()
-    risky = risky[~risky['_cid'].isin(load_inactive_clients())]
     if len(risky) > 0:
         _busca_m = st.text_input("🔍 Buscar cliente (nome, UF, vendedor ou código)", key="mgr_risky_search",
                                  placeholder="Digite parte do nome para achar qualquer cliente em risco...")
@@ -2740,25 +2979,31 @@ def page_manager(df, months, df_sku, products_df):
     # Reativação de clientes inativados (somente admin)
     inact_ids = load_inactive_clients()
     _df_inact = df[df['id'].astype(str).str.strip().isin(inact_ids)]
-    with st.expander(f"♻️ Clientes inativados ({len(inact_ids)})" + (" — reativar" if _can_approve else "")):
+    with st.expander(f"♻️ Clientes inativados no app ({len(_df_inact)})" + (" — reativar" if _can_approve else "")):
         if len(_df_inact) == 0:
             st.caption("Nenhum cliente inativado.")
-        elif not _can_approve:
-            st.caption("Reativação é feita pelo administrador.")
-            st.dataframe(_df_inact[['name', 'vendor', 'state']].rename(
-                columns={'name': 'Cliente', 'vendor': 'Vendedor', 'state': 'UF'}),
-                use_container_width=True, hide_index=True)
         else:
-            sel_react = st.multiselect("Selecione para reativar:",
-                                       sorted(_df_inact['name'].tolist()), key="mgr_react")
-            if sel_react:
-                if st.button(f"♻️ Reativar {len(sel_react)} cliente(s)", key="btn_mgr_react", type="primary"):
-                    _ids = [str(_df_inact[_df_inact['name'] == nm].iloc[0]['id']).strip()
-                            for nm in sel_react if len(_df_inact[_df_inact['name'] == nm]) > 0]
-                    if reactivate_clients(_ids):
-                        st.rerun()
-                    else:
-                        st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
+            st.caption("Só retorna à carteira quem está Ativo na planilha. Outros status "
+                       "precisam ser corrigidos na fonte antes da reativação pelo administrador.")
+            st.dataframe(_df_inact[['id', 'name', 'vendor', 'state', 'status']].rename(
+                columns={'id': 'Código', 'name': 'Cliente', 'vendor': 'Vendedor',
+                         'state': 'UF', 'status': 'Status na Planilha'}),
+                use_container_width=True, hide_index=True)
+            if not _can_approve:
+                st.caption("Reativação é feita pelo administrador.")
+            else:
+                _react = _commercial_reactivation_candidates(_df_inact, inact_ids).sort_values('name')
+                _react_labels = {str(r['id']).strip(): f"{r['name']} · {str(r['id']).strip()}"
+                                 for _, r in _react.iterrows()}
+                if _react_labels:
+                    sel_react = st.multiselect("Selecione para reativar:", list(_react_labels),
+                                               format_func=lambda cid: _react_labels.get(cid, cid), key="mgr_react")
+                    _ids = [cid for cid in sel_react if cid in _react_labels]
+                    if _ids and st.button(f"♻️ Reativar {len(_ids)} cliente(s)", key="btn_mgr_react", type="primary"):
+                        if reactivate_clients(_ids):
+                            st.rerun()
+                        else:
+                            st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
     st.divider()
 
@@ -2876,13 +3121,14 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         if sel_v != "Todas":
             work = work[work['vendor'] == sel_v]
 
-    # Remove clientes inativados manualmente (página Churn)
+    # Mesmo recorte de carteira ativa usado no Gestor e no Churn.
     inactive_ids = load_inactive_clients()
     work['_cid'] = work['id'].astype(str).str.strip()
-    work = work[~work['_cid'].isin(inactive_ids)].copy()
+    work = work[_commercial_active_mask(work, inactive_ids)].copy()
+    st.caption("Carteira ativa = status Ativo na planilha e sem inativação no app.")
 
     if len(work) == 0:
-        st.info("Nenhum cliente na carteira selecionada.")
+        st.info("Nenhum cliente ativo na carteira selecionada.")
         return
 
     work['valor_anual'] = work['monthly'].apply(annual_value_estimate)
@@ -2897,7 +3143,7 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
             fav[cid] = ', '.join(grp.nlargest(3, 'quantidade')['produto'].tolist())
 
     # ---- 1. CONTATOS PRIORITÁRIOS (clientes esfriando, por receita em jogo) ----
-    calls = work[(work['risk'].isin(['Recuperação', 'Atenção'])) & (work['status'] == 'Ativo')].copy()
+    calls = work[work['risk'].isin(['Recuperação', 'Atenção'])].copy()
     calls = calls.sort_values('valor_anual', ascending=False)
 
     # ---- 2. OFERTAS PRONTAS (produtos Curva A que o cliente ainda não compra) ----
@@ -2915,7 +3161,7 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
         _typ, _nbuy, _ = _sku_stats(df_sku)
 
         # Foca nos 30 clientes ativos mais valiosos da carteira
-        targets = work[work['status'] == 'Ativo'].sort_values('valor_anual', ascending=False).head(30)
+        targets = work.sort_values('valor_anual', ascending=False).head(30)
         for _, cl in targets.iterrows():
             owned = bought_by.get(cl['_cid'], set())
             if not owned:
@@ -2950,6 +3196,7 @@ def page_actions(df, df_sku, products_df, df_client_products, months):
     k2.metric("🟡 Contatos de Atenção", f"{n_warn}", "3-5 meses sem comprar")
     k3.metric("💰 Receita em Jogo", fmt_brl(at_stake), "estimativa anual")
     k4.metric("🎯 Ofertas Identificadas", f"{len(offers_df)}", "produtos Curva A")
+    _commercial_estimate_caption()
 
     st.divider()
 
@@ -3541,7 +3788,7 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
         monthly = c['monthly']
         period_total = _period_sum(monthly)
         total = sum(monthly)
-        months_active = sum(1 for i in sel_indices_sorted if i < len(monthly) and monthly[i] > 0)
+        months_active, n_sel = _commercial_period_recurrence(monthly, sel_indices_sorted)
         avg_ticket = period_total / months_active if months_active > 0 else 0
 
         st.subheader(f"📋 {c['name']}")
@@ -3556,7 +3803,6 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
             meta_cols[5].markdown(f"**Limite:** {fmt_brl_full(c['credit_limit'])}")
 
         # KPIs
-        n_sel = len(sel_indices_sorted)
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Receita no Período", fmt_brl(period_total), f"Total histórico: {fmt_brl(total)}")
         k2.metric("Ticket Médio/Mês", fmt_brl(avg_ticket), f"{months_active} meses com compra")
@@ -3622,9 +3868,10 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
                     f"Volume cresceu {change*100:.0f}%! De {fmt_brl(prev6)} para {fmt_brl(last6)}.",
                     "Aproveitar momento para ampliar mix de produtos."), unsafe_allow_html=True)
 
-        if months_active / len(months) < 0.3 and total > 10000:
+        if n_sel > 0 and months_active / n_sel < 0.3 and total > 10000:
             st.markdown(insight_html('warning', 'BAIXA RECORRÊNCIA',
-                f"Comprou em apenas {months_active} de {len(months)} meses ({months_active/len(months)*100:.0f}%), mas tem ticket relevante.",
+                f"Comprou em apenas {months_active} de {n_sel} meses do período selecionado "
+                f"({months_active/n_sel*100:.0f}%), mas tem faturamento histórico relevante.",
                 "Oportunidade: criar rotina de compras recorrentes."), unsafe_allow_html=True)
 
         if c['months_since'] >= 3 and c['months_since'] < 6 and c['status'] == 'Ativo':
@@ -3691,7 +3938,7 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
     def _period_sum(m):
         return sum(m[i] for i in sel_indices_sorted if i < len(m))
 
-    active_clients = df[df['status'] == 'Ativo'].copy()
+    active_clients = df[_commercial_active_mask(df, load_inactive_clients())].copy()
     active_clients['total'] = active_clients['monthly'].apply(_period_sum)
     active_clients = active_clients.sort_values('total', ascending=False)
 
@@ -3860,10 +4107,12 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
     # Load inactive clients
     inactive_ids = load_inactive_clients()
 
-    # Separate inactive from active
-    df['_client_id_str'] = df['id'].astype(str).str.strip()
-    df_active = df[~df['_client_id_str'].isin(inactive_ids)].copy()
-    df_inactive = df[df['_client_id_str'].isin(inactive_ids)].copy()
+    # Mesmo recorte de carteira ativa das páginas Ações e Gestor.
+    active_mask = _commercial_active_mask(df, inactive_ids)
+    df_active = df[active_mask].copy()
+    df_inactive = df[~active_mask].copy()
+    st.caption("Indicadores e ranking consideram apenas clientes Ativos na planilha "
+               "e sem inativação no app. Os demais aparecem em Inativos / Outros.")
 
     recup = df_active[df_active['risk'] == 'Recuperação'].copy()
     atencao = df_active[df_active['risk'] == 'Atenção'].copy()
@@ -3877,10 +4126,11 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
     k2.metric("🟡 Atenção (3-5 meses)", f"{len(atencao)}", f"Impacto: {fmt_brl(atencao_impact)}/ano")
     k3.metric("🟢 Saudáveis", f"{len(saudavel)}")
     k4.metric("💰 Receita Total em Risco", fmt_brl(recup_impact + atencao_impact), "Estimativa anual")
+    _commercial_estimate_caption()
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🔴 Recuperação", "🟡 Atenção", "📊 Ranking Vendedores", f"🚫 Inativos ({len(df_inactive)})"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔴 Recuperação", "🟡 Atenção", "📊 Ranking Vendedores", f"🚫 Inativos / Outros ({len(df_inactive)})"])
 
     # --- Helper to render a churn table with inactivate buttons ---
     def _render_churn_table(data, tab_key):
@@ -3933,60 +4183,68 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
         _render_churn_table(atencao, "atencao")
 
     with tab3:
-        vendor_risk = df_active.groupby('vendor').apply(lambda g: pd.Series({
-            'total': len(g),
-            'recuperacao': len(g[g['risk']=='Recuperação']),
-            'atencao': len(g[g['risk']=='Atenção']),
-            'impact': g[g['risk'].isin(['Recuperação','Atenção'])]['monthly'].apply(annual_value_estimate).sum()
-        })).reset_index()
-        vendor_risk['vendor_short'] = vendor_risk['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
-        vendor_risk['pct_risco'] = ((vendor_risk['recuperacao'] + vendor_risk['atencao']) / vendor_risk['total'] * 100).round(1)
-        vendor_risk = vendor_risk[vendor_risk['total'] > 0].sort_values('pct_risco', ascending=False)
+        if df_active.empty:
+            st.info("Nenhum cliente ativo para compor o ranking de vendedores.")
+        else:
+            vendor_risk = df_active.groupby('vendor')[['risk', 'monthly']].apply(lambda g: pd.Series({
+                'total': len(g),
+                'recuperacao': len(g[g['risk']=='Recuperação']),
+                'atencao': len(g[g['risk']=='Atenção']),
+                'impact': g[g['risk'].isin(['Recuperação','Atenção'])]['monthly'].apply(annual_value_estimate).sum()
+            })).reset_index()
+            vendor_risk['vendor_short'] = vendor_risk['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
+            vendor_risk['pct_risco'] = ((vendor_risk['recuperacao'] + vendor_risk['atencao']) / vendor_risk['total'] * 100).round(1)
+            vendor_risk = vendor_risk[vendor_risk['total'] > 0].sort_values('pct_risco', ascending=False)
 
-        display = vendor_risk[['vendor_short','total','recuperacao','atencao','pct_risco']].copy()
-        display.columns = ['Vendedor','Total Clientes','Recuperação','Atenção','% em Risco']
-        st.dataframe(display, use_container_width=True, hide_index=True)
+            display = vendor_risk[['vendor_short','total','recuperacao','atencao','pct_risco']].copy()
+            display.columns = ['Vendedor','Total Clientes','Recuperação','Atenção','% em Risco']
+            st.dataframe(display, use_container_width=True, hide_index=True)
 
-        fig = px.bar(vendor_risk, x='vendor_short', y=['recuperacao','atencao'],
-                    title="Clientes em Risco por Vendedor",
-                    color_discrete_map={'recuperacao':'#ef4444','atencao':'#eab308'},
-                    labels={'value':'Clientes','vendor_short':'Vendedor'},
-                    barmode='stack')
-        fig.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff', height=350)
-        st.plotly_chart(fig, use_container_width=True)
+            fig = px.bar(vendor_risk, x='vendor_short', y=['recuperacao','atencao'],
+                        title="Clientes em Risco por Vendedor",
+                        color_discrete_map={'recuperacao':'#ef4444','atencao':'#eab308'},
+                        labels={'value':'Clientes','vendor_short':'Vendedor'},
+                        barmode='stack')
+            fig.update_layout(template='plotly_white', paper_bgcolor='#ffffff', plot_bgcolor='#ffffff', height=350)
+            st.plotly_chart(fig, use_container_width=True)
 
     with tab4:
-        st.subheader("🚫 Clientes Inativados")
-        st.caption("Clientes marcados como inativos são removidos das tabelas de Churn. Você pode reativá-los aqui.")
+        st.subheader("🚫 Clientes fora da carteira ativa")
+        st.caption("A tabela distingue o status da planilha da inativação feita no app. "
+                   "O administrador pode desfazer a inativação no app de quem já está Ativo na planilha. "
+                   "Outros status precisam ser corrigidos na fonte antes de retornar à carteira.")
 
         if len(df_inactive) == 0:
-            st.info("Nenhum cliente inativado ainda.")
+            st.info("Nenhum cliente fora da carteira ativa.")
         else:
             df_inactive['total_rev'] = df_inactive['monthly'].apply(_period_sum)
             df_inactive['vendor_short'] = df_inactive['vendor'].str.replace(' Propetz Distribuição','').str.replace(' La Maison Propetz','')
+            df_inactive['inactive_app'] = df_inactive['id'].astype(str).str.strip().isin(
+                {str(cid).strip() for cid in inactive_ids}).map({True: 'Sim', False: 'Não'})
             df_inactive_sorted = df_inactive.sort_values('name')
 
-            _busca_i = st.text_input("🔍 Buscar cliente inativado (nome, UF, vendedor ou código)", key="inativ_search",
+            _busca_i = st.text_input("🔍 Buscar cliente fora da carteira ativa (nome, UF, vendedor ou código)", key="inativ_search",
                                      placeholder="Digite parte do nome para filtrar...")
             df_inactive_sorted = _filter_clients_by_term(df_inactive_sorted, _busca_i)
             if len(df_inactive_sorted) == 0:
-                st.info("Nenhum cliente inativado encontrado com esse termo.")
+                st.info("Nenhum cliente encontrado com esse termo.")
                 return
 
-            # Multiselect to reactivate (somente admin)
+            # Só admin; nunca tratar status da planilha como uma flag removível no app.
             if can_approve_inactivations():
-                inactive_names = df_inactive_sorted['name'].tolist()
-                selected_to_reactivate = st.multiselect(
-                    "Selecione clientes para REATIVAR:",
-                    options=inactive_names,
-                    key="reactivate_clients",
-                    help="Selecione clientes para devolvê-los às tabelas de Churn"
-                )
-
-                if selected_to_reactivate:
-                    if st.button(f"✅ Reativar {len(selected_to_reactivate)} cliente(s)", key="btn_reactivate", type="primary"):
-                        _ids = [str(df_inactive[df_inactive['name'] == nm].iloc[0]['id']).strip()
-                                for nm in selected_to_reactivate if len(df_inactive[df_inactive['name'] == nm]) > 0]
+                _react = _commercial_reactivation_candidates(df_inactive_sorted, inactive_ids)
+                _react_labels = {str(r['id']).strip(): f"{r['name']} · {str(r['id']).strip()}"
+                                 for _, r in _react.iterrows()}
+                if _react_labels:
+                    selected_to_reactivate = st.multiselect(
+                        "Selecione clientes para REATIVAR:",
+                        options=list(_react_labels),
+                        format_func=lambda cid: _react_labels.get(cid, cid),
+                        key="reactivate_clients",
+                        help="Somente clientes Ativos na planilha e inativados no app podem retornar aqui"
+                    )
+                    _ids = [cid for cid in selected_to_reactivate if cid in _react_labels]
+                    if _ids and st.button(f"✅ Reativar {len(_ids)} cliente(s)", key="btn_reactivate", type="primary"):
                         if reactivate_clients(_ids):
                             st.rerun()
                         else:
@@ -3994,8 +4252,10 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
             else:
                 st.caption("Reativação de clientes é feita pelo administrador.")
 
-            display_inact = df_inactive_sorted[['name','state','vendor_short','risk','last_purchase','months_since','total_rev']].copy()
-            display_inact.columns = ['Cliente','UF','Vendedor','Risco Original','Última Compra','Meses Inativo',f'Receita ({period_label})']
+            display_inact = df_inactive_sorted[['id','name','state','vendor_short','status','inactive_app',
+                                                'risk','last_purchase','months_since','total_rev']].copy()
+            display_inact.columns = ['Código','Cliente','UF','Vendedor','Status na Planilha','Inativação no App',
+                                     'Risco Original','Última Compra','Meses sem Comprar',f'Receita ({period_label})']
             show_money_table(display_inact, [f'Receita ({period_label})'],
                              use_container_width=True, hide_index=True, height=500)
 
@@ -4138,7 +4398,11 @@ def page_products(products_df, df_sku):
 # ============================================================
 # PAGE: ADMIN
 # ============================================================
-def page_admin():
+def page_admin(vendor_options=None):
+    if not st.session_state.get('authenticated') or st.session_state.get('role') != 'admin':
+        st.error("A administração está disponível somente para administradores.")
+        return
+    vendor_options = vendor_options or []
     st.header("⚙️ Administração")
 
     st.subheader("Gerenciar Usuários")
@@ -4151,7 +4415,7 @@ def page_admin():
             "Usuário": username,
             "Nome": info["name"],
             "Papel": info["role"],
-            "Filtro Vendedor": info.get("vendor_filter", "Todos")
+            "Filtro Vendedor": (info.get("vendor_filter") or "⚠️ Sem carteira") if info.get("role") == "vendedor" else "Não se aplica"
         })
     st.dataframe(pd.DataFrame(user_data), use_container_width=True, hide_index=True)
 
@@ -4168,22 +4432,45 @@ def page_admin():
             new_password = st.text_input("Senha", type="password")
             new_role = st.selectbox("Papel", ["vendedor", "admin"])
 
-        new_vendor = st.text_input("Filtro de vendedor (deixe vazio para admin)",
-                                   help="Nome exato do vendedor na planilha, ex: 'Emanuel Propetz Distribuição'")
+        new_vendor = st.selectbox("Carteira do vendedor", vendor_options, index=None,
+                                   placeholder="Selecione a carteira",
+                                   help="Obrigatória para vendedor. Administradores têm acesso completo.")
 
         if st.form_submit_button("Adicionar Usuário", type="primary"):
-            if new_username and new_name and new_password:
+            error = _new_user_error(users, new_username, new_name, new_password,
+                                    new_role, new_vendor, vendor_options)
+            if error:
+                st.error(error)
+            else:
+                new_username = new_username.strip().lower()
                 users["users"][new_username] = {
-                    "name": new_name,
+                    "name": new_name.strip(),
                     "password": hash_password(new_password),
                     "role": new_role,
-                    "vendor_filter": new_vendor if new_vendor else None
+                    "vendor_filter": new_vendor if new_role == 'vendedor' else None
                 }
                 save_users(users)
                 st.success(f"Usuário '{new_username}' criado com sucesso!")
                 st.rerun()
-            else:
-                st.error("Preencha todos os campos.")
+
+    vendor_users = [username for username, info in users['users'].items() if info.get('role') == 'vendedor']
+    if vendor_users:
+        st.divider()
+        st.subheader("Ajustar Carteira de Vendedor")
+        with st.form("change_vendor"):
+            wallet_user = st.selectbox("Vendedor (login)", vendor_users)
+            wallet_vendor = st.selectbox("Nova carteira", vendor_options, index=None,
+                                         placeholder="Selecione a carteira")
+            st.caption("O vendedor verá a carteira atualizada na próxima interação com o app neste servidor.")
+            if st.form_submit_button("Salvar Carteira"):
+                error = _access_configuration_error('vendedor', wallet_vendor, vendor_options)
+                if error:
+                    st.error(error)
+                else:
+                    users['users'][wallet_user]['vendor_filter'] = wallet_vendor
+                    save_users(users)
+                    st.success(f"Carteira de '{wallet_user}' ajustada.")
+                    st.rerun()
 
     st.divider()
 
@@ -4193,7 +4480,9 @@ def page_admin():
         pwd_user = st.selectbox("Usuário", list(users["users"].keys()))
         new_pwd = st.text_input("Nova senha", type="password", key="new_pwd")
         if st.form_submit_button("Alterar Senha"):
-            if new_pwd:
+            if len(new_pwd) < 12:
+                st.error("Use uma senha com pelo menos 12 caracteres.")
+            else:
                 users["users"][pwd_user]["password"] = hash_password(new_pwd)
                 save_users(users)
                 st.success(f"Senha de '{pwd_user}' alterada!")
@@ -4335,6 +4624,11 @@ def main():
         return
     _touch_session()
 
+    access_error = _refresh_session_access()
+    if access_error:
+        _show_access_denied(access_error)
+        return
+
     # Load data
     result = load_data()
     if result[0] is None or len(result) < 6:
@@ -4353,9 +4647,13 @@ def main():
 
     df_clients, df_products, df_client_products, months, year_ranges, df_sku = result
 
-    # Apply vendor filter for non-admin users
-    if st.session_state.get("vendor_filter"):
-        df_clients = df_clients[df_clients['vendor'] == st.session_state["vendor_filter"]].copy()
+    vendor_options = _vendor_options(df_clients)
+    try:
+        df_clients = _clients_for_access(df_clients, st.session_state.get('role'),
+                                         st.session_state.get('vendor_filter'))
+    except ValueError as error:
+        _show_access_denied(str(error))
+        return
 
     # --- Parse unique years and month names from labels (e.g. "jan/21") ---
     all_years_ordered = []
@@ -4670,7 +4968,7 @@ def main():
     elif page == "products":
         page_products(df_products, df_sku)
     elif page == "admin":
-        page_admin()
+        page_admin(vendor_options)
 
 if __name__ == "__main__":
     main()

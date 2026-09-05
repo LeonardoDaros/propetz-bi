@@ -103,7 +103,14 @@ class SafeDeployTests(unittest.TestCase):
         self.write("teste_etapa2_fixture.py", "assert True\n")
         self.write("agenda_comercial.py", "MODULE = 'agenda'\n")
         self.write("ui_propetz.py", "MODULE = 'visual'\n")
+        self.write("painel_garantias.py", "MODULE = 'warranty_view'\n")
+        self.write("garantia_analytics.py", "MODULE = 'warranty_metrics'\n")
+        self.write("teste_painel_garantias.py", "assert True\n")
+        self.write("exportacao_csv.py", "MODULE = 'safe_csv'\n")
+        self.write("teste_exportacao_csv.py", "assert True\n")
         self.write("agenda_comercial.json", '{"clientes": {"ficticio": {}}}\n')
+        self.write("garantias.json", '{"garantias": [{"id": "SYNTHETIC"}]}\n')
+        self.write(".streamlit/secrets.toml", "# Synthetic local-only configuration\n")
         shutil.copy2(HELPER, self.local / HELPER.name)
         self.deploy(expect_ok=True)
         self.assertEqual(self.git(self.local, "rev-parse", "HEAD").stdout,
@@ -112,10 +119,13 @@ class SafeDeployTests(unittest.TestCase):
         self.assertEqual(self.git(self.remote, "show", "main:access_log.json").stdout, "[]\n")
         files = self.git(self.remote, "ls-tree", "-r", "--name-only", "main").stdout.splitlines()
         self.assertIn("teste_etapa1_fixture.py", files)
-        for included in ("teste_etapa2_fixture.py", "agenda_comercial.py", "ui_propetz.py"):
+        for included in ("teste_etapa2_fixture.py", "agenda_comercial.py", "ui_propetz.py",
+                         "painel_garantias.py", "garantia_analytics.py", "teste_painel_garantias.py",
+                         "exportacao_csv.py", "teste_exportacao_csv.py"):
             self.assertIn(included, files)
         self.assertIn(HELPER.name, files)
-        for excluded in ("CREDENCIAIS-LOCAL.md", "Analise_local.md", "Backups/internal.xlsx", "agenda_comercial.json"):
+        for excluded in ("CREDENCIAIS-LOCAL.md", "Analise_local.md", "Backups/internal.xlsx",
+                         "agenda_comercial.json", "garantias.json", ".streamlit/secrets.toml"):
             self.assertNotIn(excluded, files)
             self.assertTrue((self.local / excluded).exists())
 

@@ -36,7 +36,10 @@ try {
     $script:DeployRepo = (Resolve-Path -LiteralPath $RepositoryPath).Path
     # Nunca preparar automaticamente users.yaml, estado, secrets ou Backups.
     $script:DeployFiles = @(
-        'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py', 'requirements.txt', '.gitignore',
+        'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py',
+        'painel_garantias.py', 'garantia_analytics.py', 'teste_painel_garantias.py',
+        'exportacao_csv.py', 'teste_exportacao_csv.py',
+        'requirements.txt', '.gitignore',
         '.streamlit/config.toml', 'abc_valor.json',
         'Relatorio Distribuidores Mensal.xlsx',
         'teste_seguranca_login.py', 'deploy_seguro.ps1'

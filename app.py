@@ -18,6 +18,8 @@ import uuid
 from zoneinfo import ZoneInfo
 import agenda_comercial as agenda
 import ui_propetz as ui
+import painel_garantias
+from exportacao_csv import csv_excel_bytes
 from collections import defaultdict
 from datetime import datetime, timedelta, date
 
@@ -2346,146 +2348,12 @@ def page_garantias(products_df, df_clients):
 
     # ---------------- PAINEL ----------------
     with tab_painel:
-        if not garantias:
-            st.info("Nenhuma garantia registrada ainda. Os indicadores nascem conforme o time registra.")
-        else:
-            atng = [g for g in garantias if g.get("status") in STATUS_ATIVOS]
-            # "concluída operacionalmente" = serviço feito e enviado (mesmo aguardando R$ do frete)
-            concl = [g for g in garantias
-                     if g.get("status") in ("Confirmado — aguardando R$ frete", "Concluída")]
-            for g in garantias:
-                if not g.get("custo_total"):
-                    g["custo_total"] = _garantia_custo_total(g, custo_map)
-            mes_atual = datetime.now().strftime("%Y-%m")
-            custo_mes = sum(g["custo_total"] for g in concl if str(g.get("concluido_em", "")).startswith(mes_atual))
-
-            # Mesmas datas/validações dos cards. Não mistura bases diferentes
-            # na média; prioriza chegada→envio, depois usa a base disponível.
-            tempos = [_garantia_tempo_info(g) for g in concl]
-            bases_tempo = {
-                "chegada_envio": "⏱️ Tempo na empresa (chegada→envio)",
-                "chegada_confirmacao": "⏱️ Tempo médio (chegada→confirmação)",
-                "abertura_envio": "⏱️ Tempo médio (abertura→envio)",
-                "abertura_confirmacao": "⏱️ Tempo médio (abertura→confirmação)",
-            }
-            base_tempo = next((base for base in bases_tempo
-                               if any(t["base"] == base and t["dias"] is not None for t in tempos)), None)
-            dias_validos = [t["dias"] for t in tempos
-                           if t["base"] == base_tempo and t["dias"] is not None]
-            _t_label = bases_tempo.get(base_tempo, "⏱️ Tempo médio (datas válidas)")
-            _t_valor = f"{sum(dias_validos)/len(dias_validos):.0f} dias" if dias_validos else "—"
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("🔴 Em aberto", len(atng))
-            k2.metric(_t_label, _t_valor)
-            k3.metric("💸 Custo no mês", fmt_brl(custo_mes))
-            k4.metric("📋 Total histórico", len(garantias))
-            st.caption(f"Prazo calculado com {len(dias_validos)} de {len(concl)} casos encerrados "
-                       "operacionalmente. A média usa apenas casos com a mesma base de datas; "
-                       "datas ausentes, inconsistentes ou futuras não entram.")
-            st.divider()
-            dfg = pd.DataFrame(garantias)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Defeitos mais comuns (Pareto)**")
-                st.dataframe(dfg["defeito"].value_counts().reset_index().rename(
-                    columns={"defeito": "Defeito", "count": "Casos"}),
-                    use_container_width=True, hide_index=True)
-            with col2:
-                st.markdown("**Causa raiz (diagnóstico da bancada)**")
-                causas = dfg[dfg["diagnostico_causa"] != ""]["diagnostico_causa"].value_counts()
-                if len(causas):
-                    st.dataframe(causas.reset_index().rename(
-                        columns={"diagnostico_causa": "Causa", "count": "Casos"}),
-                        use_container_width=True, hide_index=True)
-                else:
-                    st.caption("Ainda sem diagnósticos concluídos.")
-            st.markdown("**Casos registrados × unidades vendidas** (todos os canais)")
-            periodo_vendas = _garantia_periodo_vendas(meta)
-            if not periodo_vendas:
-                st.info("Relação indisponível: a referência de vendas não informa um período "
-                        "e uma data de publicação válidos.")
-            else:
-                inicio_ref, fim_ref = periodo_vendas
-                ultimo_instante = fim_ref - timedelta(minutes=1)
-                st.caption(f"Vendas: {meta['periodo']} · Referência publicada em {meta['gerado_em']}. "
-                           f"Casos registrados de {inicio_ref:%d/%m/%Y} até "
-                           f"{ultimo_instante:%d/%m/%Y %H:%M}, sem canceladas.")
-                st.caption("O mês final pode ser parcial. A publicação não comprova a cobertura "
-                           "integral das vendas ou dos registros de assistência. Esta relação "
-                           "não representa a taxa real de defeito dos produtos vendidos.")
-                casos_ref = _garantias_no_periodo_vendas(garantias, periodo_vendas)
-                if not casos_ref:
-                    st.info("Nenhum caso não cancelado com data de registro válida nessa referência.")
-                else:
-                    # O SKU é a identidade: nomes antigos/variantes não podem
-                    # dividir o numerador e repetir o mesmo denominador de vendas.
-                    nomes_sku = {}
-                    for _, p in products_df.iterrows():
-                        if pd.notna(p.get("code")) and pd.notna(p.get("name")):
-                            sku, nome = str(p["code"]).strip(), str(p["name"]).strip()
-                            if sku and nome:
-                                nomes_sku.setdefault(sku, nome)
-                    for g in casos_ref:
-                        sku = str(g.get("produto_sku") or "").strip()
-                        nome = str(g.get("produto_nome") or "").strip()
-                        if sku and nome:
-                            nomes_sku.setdefault(sku, nome)
-                    df_ref = pd.DataFrame(casos_ref)
-                    df_ref["produto_sku"] = df_ref["produto_sku"].fillna("").astype(str).str.strip()
-                    agg = df_ref.groupby("produto_sku").agg(
-                        Casos=("id", "count"), Custo=("custo_total", "sum")).reset_index()
-                    agg.insert(1, "produto_nome", agg["produto_sku"].map(nomes_sku).fillna("Sem nome informado"))
-                    agg["Unidades vendidas"] = agg["produto_sku"].map(
-                        lambda s: vendas_map.get(str(s).strip()))
-                    agg["Casos / unidades"] = agg.apply(
-                        lambda r: _garantia_relacao_vendas(r["Casos"], r["Unidades vendidas"]), axis=1)
-                    agg = agg.sort_values("Casos", ascending=False).head(20)
-                    disp = agg.rename(columns={"produto_sku": "SKU", "produto_nome": "Produto"})
-                    disp["Casos / unidades"] = disp["Casos / unidades"].apply(
-                        lambda v: f"{v:.1%}" if pd.notna(v) else "—")
-                    show_money_table(disp, ["Custo"], use_container_width=True, hide_index=True,
-                                     height=min(420, 35 * len(disp) + 38))
-                    st.caption("— indica ausência de uma quantidade vendida válida para calcular a relação.")
-            if len(concl):
-                st.markdown("**Peças e serviços mais usados** (planejar reposição / carga da bancada)")
-                cons = defaultdict(lambda: {"qtd": 0, "custo": 0.0})
-                for g in garantias:
-                    for p in g.get("pecas", []):
-                        c = cons[f"{p.get('sku','')} — {p.get('nome','')[:40]}"]
-                        c["qtd"] += p.get("qtd", 1)
-                        c["custo"] += (p.get("qtd", 1) or 1) * (p.get("custo", 0) or 0)
-                if cons:
-                    dfp = pd.DataFrame([{"Peça": k, "Qtd usada": v["qtd"], "Custo": round(v["custo"], 2)}
-                                        for k, v in cons.items()]).sort_values("Qtd usada", ascending=False)
-                    show_money_table(dfp, ["Custo"], use_container_width=True, hide_index=True,
-                                     height=min(350, 35 * len(dfp) + 38))
-            flat = []
-            for g in garantias:
-                flat.append({"ID": g["id"], "Status": g.get("status"),
-                             "Prioridade": g.get("prioridade", "Normal"),
-                             "Canal": _rotulo_outro(g.get("canal"), g.get("canal_outro")),
-                             "Cliente": g.get("cliente"), "SKU": g.get("produto_sku"),
-                             "Produto": g.get("produto_nome"),
-                             "Empresa NF": g.get("empresa_nf", ""),
-                             "Data compra": g.get("data_compra", ""),
-                             "Cliente final": g.get("cliente_final", ""),
-                             "NF cliente final": g.get("cliente_final_nf", ""),
-                             "Chave NF cliente final": g.get("cliente_final_nf_chave", ""),
-                             "NF entrada": g.get("nf_entrada"), "NF saída": g.get("nf_saida"),
-                             "Rastreio entrada": g.get("rastreio_entrada", ""),
-                             "Rastreio saída": g.get("rastreio_saida", ""),
-                             "Defeito": _rotulo_outro(g.get("defeito"), g.get("defeito_outro")),
-                             "Relato": g.get("defeito_obs"),
-                             "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
-                             "Data chegada": g.get("data_chegada", ""), "Data envio": g.get("data_envio", ""),
-                             "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g.get("pecas", [])),
-                             "Frete vinda": g.get("frete_vinda", 0), "Frete volta": g.get("frete_volta", 0),
-                             "Sem frete (justif.)": g.get("frete_obs", ""),
-                             "Custo total": g.get("custo_total", 0), "Resultado": g.get("resultado"),
-                             "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
-                             "Registrado por": g.get("criado_por")})
-            _csv_download(pd.DataFrame(flat), "⬇️ Baixar garantias deste perfil (Excel/CSV)",
-                          "garantias.csv", "dl_gar")
+        painel_garantias.render_painel(
+            garantias, products_df, meta, role=st.session_state.get("role"),
+            tempo_info=_garantia_tempo_info, periodo_vendas=_garantia_periodo_vendas,
+            casos_periodo=_garantias_no_periodo_vendas, relacao_vendas=_garantia_relacao_vendas,
+            csv_download=_csv_download,
+        )
 
 # ============================================================
 # PAGE: PAINEL DO GESTOR (tela inicial do admin/diretor)
@@ -2961,8 +2829,8 @@ def page_manager(df, months, df_sku, products_df):
 # PAGE: MINHAS AÇÕES (tela inicial — lista priorizada de trabalho)
 # ============================================================
 def _csv_download(df_export, label, filename, key):
-    """Botão de download CSV no padrão Excel brasileiro (; e vírgula decimal)."""
-    csv_bytes = df_export.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
+    """CSV no padrão Excel brasileiro, com texto protegido contra fórmulas."""
+    csv_bytes = csv_excel_bytes(df_export)
     st.download_button(label, csv_bytes, file_name=filename, mime="text/csv", key=key)
 
 def _filter_clients_by_term(df, term, name_col='name', vendor_col='vendor', state_col='state', id_col='id'):

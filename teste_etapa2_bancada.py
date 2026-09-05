@@ -29,9 +29,9 @@ class ListaDetalheTests(unittest.TestCase):
         tabela = next(t for t in ui.tables if "Cliente final / cliente" in t.columns)
         self.assertEqual(tabela["ID"].tolist(), ["G-1002", "G-1003", "G-1001"])
         self.assertEqual(ui.forms, ["gar_upd_atv_G-1002"])
-        self.assertEqual(len(ui.expanders), 1)
-        self.assertTrue(ui.expanders[0][1])
-        self.assertIn("G-1002", ui.expanders[0][0])
+        self.assertEqual(len(ui.fichas_garantia), 1)
+        self.assertTrue(ui.fichas_garantia[0][1])
+        self.assertIn("G-1002", ui.fichas_garantia[0][0])
 
     def test_selecao_por_id_preservada_com_ordenacao_nova(self):
         state = {"gar_atendimento_atv": "G-1001"}
@@ -67,13 +67,13 @@ class ListaDetalheTests(unittest.TestCase):
         self.assertNotIn("gar_atendimento_atv", ui.session_state)
         self.assertNotIn("gar_atendimento_atv", ui.selectors)
         self.assertEqual(ui.forms, [])
-        self.assertEqual(ui.expanders, [])
+        self.assertEqual(ui.fichas_garantia, [])
 
     def test_operador_consulta_concluida_sem_formulario(self):
         ui = render("garantia", [caso()], state={"gar_subtab": "co"})
         self.assertEqual(ui.selectors["gar_atendimento_co"]["options"], ["G-1001"])
         self.assertEqual(ui.forms, [])
-        self.assertEqual(len(ui.expanders), 1)
+        self.assertEqual(len(ui.fichas_garantia), 1)
         self.assertTrue(any("Garantia finalizada" in m for m in ui.messages))
 
     def test_master_preserva_correcao_da_concluida(self):
@@ -132,15 +132,15 @@ NS['page_garantias'](products, clients)
 '''
 
 
-class StreamlitBancadaTests(unittest.TestCase):
-    def ui(self):
+class StreamlitHarness:
+    def ui(self, registros=None):
         # O app real usa logging DEBUG local; evita imprimir estados de widgets.
         with patch('logging.Logger.isEnabledFor', return_value=False):
             # AppTest 1.41 grava o script temporário no encoding do Windows.
             # Escapes mantêm os literais pt-BR e deixam o código temporário ASCII.
             script = SCRIPT.encode('ascii', 'backslashreplace').decode('ascii')
             at = AppTest.from_string(script, default_timeout=30)
-            at.session_state['_cases'] = abertos()
+            at.session_state['_cases'] = copy.deepcopy(abertos() if registros is None else registros)
             at.run()
         self.assertEqual(len(at.exception), 0)
         return at
@@ -157,6 +157,8 @@ class StreamlitBancadaTests(unittest.TestCase):
         self.assertEqual(len(at.exception), 0)
         return at
 
+
+class StreamlitBancadaTests(StreamlitHarness, unittest.TestCase):
     def test_streamlit_preserva_id_ao_reordenar_opcoes(self):
         at = self.ui()
         at.selectbox(key='gar_atendimento_atv').select('G-1001')
@@ -205,6 +207,60 @@ class StreamlitBancadaTests(unittest.TestCase):
         self.assertEqual(at.selectbox(key='gar_atendimento_atv').value, 'G-1003')
         self.assertNotIn('_updates', at.session_state)
         self.assertEqual(at.session_state['_cases'][2]['diagnostico_obs'], 'Serviço fictício')
+
+
+class StreamlitPainelTests(StreamlitHarness, unittest.TestCase):
+    def registros(self):
+        return [
+            caso('G-2101', produto_sku='PRO-01', produto_nome='Produto Alfa',
+                 canal='Varejo', data_envio='2026-08-14'),
+            caso('G-2102', produto_sku='PRO-01', produto_nome='Produto Alfa',
+                 canal='Varejo', data_envio='2026-08-16'),
+            caso('G-2201', produto_sku='PRO-02', produto_nome='Produto Bravo',
+                 canal='Distribuição', data_envio='2026-08-20'),
+            caso('G-2301', produto_sku='PRO-03', produto_nome='Produto Charlie',
+                 canal='Varejo', data_envio='2026-08-22'),
+        ]
+
+    def detalhes(self, at):
+        return next(t.value for t in at.dataframe
+                    if {'Protocolo', 'Causa diagnosticada'}.issubset(t.value.columns))
+
+    def test_streamlit_preserva_sku_valido_apos_filtrar_canal(self):
+        registros = self.registros()
+        at = self.ui(registros)
+        at.radio(key='gp_visao').set_value('Produtos e causas')
+        self.run_ui(at)
+        self.assertEqual(len(at.selectbox(key='gp_produto').options), 3)
+        at.selectbox(key='gp_produto').select('PRO-03')
+        self.run_ui(at)
+        self.assertEqual(at.selectbox(key='gp_produto').value, 'PRO-03')
+        at.selectbox(key='gp_canal').select('Varejo')
+        self.run_ui(at)
+        # As opções mudaram de três para duas, mas PRO-03 continua válido.
+        # Recriar o widget com o default selecionaria PRO-01 silenciosamente.
+        self.assertEqual(len(at.selectbox(key='gp_produto').options), 2)
+        self.assertEqual(at.selectbox(key='gp_produto').value, 'PRO-03')
+        self.assertEqual(self.detalhes(at)['Protocolo'].tolist(), ['G-2301'])
+        self.assertEqual(at.session_state['_cases'], registros)
+        self.assertNotIn('_updates', at.session_state)
+
+    def test_streamlit_duracao_e_cobertura_acompanham_produto_selecionado(self):
+        at = self.ui(self.registros())
+        # Todos os produtos: (2 + 4 + 8 + 10) / 4 = 6 dias.
+        self.assertEqual(next(m.value for m in at.metric if m.label.startswith('⏱')), '6 dias')
+        at.radio(key='gp_visao').set_value('Produtos e causas')
+        self.run_ui(at)
+        at.selectbox(key='gp_produto').select('PRO-03')
+        self.run_ui(at)
+        self.assertEqual(next(m.value for m in at.metric if m.label.startswith('⏱')), '10 dias')
+        self.assertTrue(any('Prazo calculado com 1 de 1' in c.value for c in at.caption))
+        at.selectbox(key='gp_produto').select('PRO-01')
+        self.run_ui(at)
+        self.assertEqual(next(m.value for m in at.metric if m.label.startswith('⏱')), '3 dias')
+        self.assertTrue(any('Prazo calculado com 2 de 2' in c.value for c in at.caption))
+        self.assertEqual(self.detalhes(at)['Protocolo'].tolist(), ['G-2101', 'G-2102'])
+        self.assertNotIn('_updates', at.session_state)
 
 
 if __name__ == '__main__':

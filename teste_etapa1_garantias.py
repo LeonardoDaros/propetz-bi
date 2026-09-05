@@ -7,13 +7,16 @@ Rodar: python teste_etapa1_garantias.py
 import ast
 import copy
 import math
+import re
 import unittest
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
+import painel_garantias
 from util_comum import parse_label_ym
 
 
@@ -36,7 +39,7 @@ NODES = [n for n in TREE.body if
                                           for t in n.targets))]
 NS = {"datetime": datetime, "date": date, "timedelta": timedelta,
       "math": math, "pd": pd, "defaultdict": defaultdict,
-      "_parse_label_ym": parse_label_ym}
+      "_parse_label_ym": parse_label_ym, "painel_garantias": painel_garantias}
 exec(compile(ast.Module(body=NODES, type_ignores=[]), str(APP), "exec"), NS)
 
 
@@ -64,10 +67,12 @@ class FakeUI:
         self.messages = []
         self.tables = []
         self.exports = []
+        self.export_labels = []
         self.metrics = []
         self.forms = []
         self.expanders = []
         self.selectors = {}
+        self.charts = []
 
     def __enter__(self):
         return self
@@ -75,8 +80,11 @@ class FakeUI:
     def __exit__(self, *_):
         return False
 
-    def columns(self, spec):
+    def columns(self, spec, **_):
         return [self] * (spec if isinstance(spec, int) else len(spec))
+
+    def container(self, **_):
+        return self
 
     def tabs(self, labels):
         return [self] * len(labels)
@@ -106,6 +114,9 @@ class FakeUI:
         selected = self.session_state.get(key, default or options[0])
         return selected if selected in options else default or options[0]
 
+    def radio(self, label, options, index=0, key=None, format_func=str, **kwargs):
+        return self.selectbox(label, options, index=index, key=key, format_func=format_func, **kwargs)
+
     def text_input(self, _label, value="", key=None, **_):
         return self.session_state.get(key, value) if key else value
 
@@ -127,12 +138,21 @@ class FakeUI:
         self.metrics.append((label, value))
 
     def dataframe(self, value, **_):
-        self.tables.append(value.copy(deep=True))
+        frame = value.data if hasattr(value, "data") and isinstance(value.data, pd.DataFrame) else value
+        self.tables.append(frame.copy(deep=True))
+
+    def plotly_chart(self, figure, **_):
+        self.charts.append(copy.deepcopy(figure.to_plotly_json()))
 
     def write_message(self, value, **_):
         self.messages.append(str(value))
 
-    header = caption = markdown = info = warning = success = error = write_message
+    header = subheader = caption = markdown = write = info = warning = success = error = write_message
+
+    @property
+    def fichas_garantia(self):
+        """Expanders analíticos não são fichas editáveis da Bancada."""
+        return [item for item in self.expanders if re.search(r"\bG-\d+\s+—", item[0])]
 
     def divider(self):
         pass
@@ -143,6 +163,11 @@ class FakeUI:
 
 def render(role, registros, meta=None, produtos=None, state=None):
     ui = FakeUI(role, state)
+
+    def capture_csv(frame, label, *_args, **_kwargs):
+        ui.exports.append(frame.copy(deep=True))
+        ui.export_labels.append(label)
+
     NS.update({"st": ui,
                "load_abc_valor": lambda: copy.deepcopy(META if meta is None else meta),
                "load_garantias": lambda: copy.deepcopy(registros),
@@ -150,11 +175,22 @@ def render(role, registros, meta=None, produtos=None, state=None):
                "fmt_brl": lambda value: f"R$ {value:.2f}",
                "fmt_brl_full": lambda value: f"R$ {value:.2f}",
                "show_money_table": lambda frame, *_args, **_kwargs: ui.tables.append(frame.copy(deep=True)),
-               "_csv_download": lambda frame, *_args, **_kwargs: ui.exports.append(frame.copy(deep=True))})
+               "_csv_download": capture_csv})
     if produtos is None:
         produtos = pd.DataFrame([{"code": "SKU-EXEMPLO", "name": "Produto fictício"}])
     clientes = pd.DataFrame([{"name": "Distribuidor fictício"}])
-    NS["page_garantias"](produtos, clientes)
+    stats_grid = painel_garantias.ui.stats_grid
+
+    def capture_stats(items):
+        ui.metrics.extend((item[0], item[1]) for item in items)
+        return stats_grid(items)
+
+    # Executa o painel e o motor reais; somente os widgets e a saída são simulados.
+    # Os patches são restaurados para os testes de integração com Streamlit real.
+    with patch.object(painel_garantias, "st", ui), \
+            patch.object(painel_garantias.ui, "st", ui), \
+            patch.object(painel_garantias.ui, "stats_grid", side_effect=capture_stats):
+        NS["page_garantias"](produtos, clientes)
     return ui
 
 
@@ -167,7 +203,7 @@ class VisibilidadeTests(unittest.TestCase):
                 self.assertEqual(ui.exports[0]["ID"].tolist(), ["G-1001"])
                 self.assertNotIn("G-SEGREDO-CANCELADO", " ".join(ui.messages))
                 self.assertNotIn("NOME-CANCELADO", " ".join(ui.messages))
-                self.assertIn(("📋 Total histórico", 1), ui.metrics)
+                self.assertIn(("Casos no recorte", 1), ui.metrics)
                 relacao = next(t for t in ui.tables if "Casos / unidades" in t.columns)
                 self.assertEqual(relacao["Casos"].tolist(), [1])
 
@@ -176,7 +212,8 @@ class VisibilidadeTests(unittest.TestCase):
             with self.subTest(role=role):
                 ui = render(role, [caso(), caso("G-1002", "Cancelada")])
                 self.assertEqual(ui.exports[0]["ID"].tolist(), ["G-1001", "G-1002"])
-                self.assertIn(("📋 Total histórico", 2), ui.metrics)
+                self.assertIn(("Casos no recorte", 1), ui.metrics)
+                self.assertEqual(ui.exports[1]["ID"].tolist(), ["G-1001"])
                 relacao = next(t for t in ui.tables if "Casos / unidades" in t.columns)
                 self.assertEqual(relacao["Casos"].tolist(), [1])
                 self.assertEqual(relacao["Custo"].tolist(), [30.0])
@@ -248,7 +285,7 @@ class TempoTests(unittest.TestCase):
         self.assertEqual(depois["dias"], 24)
         self.assertEqual(depois["base"], "chegada_hoje")
         ui = render("garantia", [g])
-        self.assertIn(("🔴 Em aberto", 1), ui.metrics)
+        self.assertIn(("Pendências técnicas", 1), ui.metrics)
         self.assertEqual(next(value for label, value in ui.metrics if label.startswith("⏱")), "—")
 
     def test_kpi_exclui_conclusao_anterior_a_abertura(self):
@@ -354,6 +391,189 @@ class ReferenciaTests(unittest.TestCase):
         relacao = next(t for t in ui.tables if "Casos / unidades" in t.columns)
         self.assertEqual(relacao["Produto"].tolist(), ["Nome histórico"])
         self.assertEqual(relacao["Casos"].tolist(), [3])
+
+
+class PainelAnaliticoTests(unittest.TestCase):
+    """Contratos de leitura do painel real, com somente entrada e saída simuladas."""
+
+    def registros(self):
+        return [
+            caso("G-1000", status="Cancelada", produto_sku="SKU-CANCELADO",
+                 produto_nome="Produto cancelado exclusivo", custo_total=500),
+            caso(),
+            caso("G-1002", status="Em bancada", criado="2026-08-11 10:00",
+                 canal="E-commerce", custo_total=0, diagnostico_causa="",
+                 data_envio="", concluido_em=""),
+            caso("G-1003", status="Confirmado — aguardando R$ frete", criado="2026-08-12 10:00",
+                 produto_sku="SKU-B", produto_nome="Produto B", canal="E-commerce",
+                 custo_total=None, diagnostico_causa=""),
+            caso("G-1004", criado="2026-07-10 10:00", produto_sku="SKU-B",
+                 produto_nome="Produto B", custo_total=20, diagnostico_causa="Mau uso"),
+            caso("G-1005", status="Aguardando chegada", criado="2026-08-13 10:00",
+                 produto_sku="SKU-C", produto_nome="Produto C", custo_total=None,
+                 diagnostico_causa="", data_chegada="", data_envio="", concluido_em=""),
+        ]
+
+    def test_tres_visoes_executam_motor_graficos_e_preservam_auditoria(self):
+        for view in ("Visão geral", "Produtos e causas", "Operação e custos"):
+            with self.subTest(view=view):
+                ui = render("admin", self.registros(), state={"gp_visao": view})
+                self.assertIn(("Casos no recorte", 5), ui.metrics)
+                self.assertIn(("Com diagnóstico", "40%"), ui.metrics)
+                self.assertIn(("Pendências técnicas", 2), ui.metrics)
+                self.assertGreaterEqual(len(ui.charts), 2)
+                self.assertEqual(ui.exports[0]["ID"].tolist(),
+                                 ["G-1000", "G-1001", "G-1002", "G-1003", "G-1004", "G-1005"])
+                if view == "Produtos e causas":
+                    chosen = ui.session_state["gp_produto"]
+                    expected = [g["id"] for g in self.registros()
+                                if g["status"] != "Cancelada" and g["produto_sku"] == chosen]
+                    self.assertEqual(ui.exports[1]["ID"].tolist(), expected)
+                    self.assertEqual(ui.export_labels[1], "Baixar casos deste produto (CSV)")
+                else:
+                    self.assertEqual(ui.exports[1]["ID"].tolist(),
+                                     ["G-1001", "G-1002", "G-1003", "G-1004", "G-1005"])
+                    self.assertEqual(ui.export_labels[1], "Baixar análise filtrada (CSV)")
+                self.assertNotIn("Produto cancelado exclusivo", str(ui.charts))
+                # Nem tabelas por produto, nem protocolos do painel incluem canceladas.
+                for table in ui.tables:
+                    if "Casos" in table.columns or "Protocolo" in table.columns:
+                        self.assertNotIn("SKU-CANCELADO", table.to_string())
+                        self.assertNotIn("G-1000", table.to_string())
+
+    def test_canal_e_datas_inclusivas_filtram_indicadores_e_csv_analitico(self):
+        ui = render("admin", self.registros(), state={
+            "gp_canal": "Distribuição", "gp_periodo": "Personalizado",
+            "gp_datas": (date(2026, 8, 10), date(2026, 8, 11)),
+        })
+        self.assertIn(("Casos no recorte", 1), ui.metrics)
+        self.assertEqual(ui.exports[1]["ID"].tolist(), ["G-1001"])
+        self.assertEqual(len(ui.exports[0]), 6)
+        reference = next(t for t in ui.tables if "Casos / unidades" in t.columns)
+        self.assertEqual(reference["Casos"].sum(), 5)
+        self.assertTrue(any("filtros de período e canal acima não se aplicam" in m for m in ui.messages))
+        self.assertIn(("⏱️ Tempo na empresa (chegada→envio)", "3 dias"), ui.metrics)
+
+    def test_fim_do_dia_e_inclusivo_inicio_exclui_dia_anterior(self):
+        registros = [caso("G-1001", criado="2026-08-09 23:59"),
+                     caso("G-1002", criado="2026-08-10 00:00"),
+                     caso("G-1003", criado="2026-08-10 23:59"),
+                     caso("G-1004", criado="2026-08-11 00:00")]
+        ui = render("garantia", registros, state={"gp_periodo": "Personalizado",
+                    "gp_datas": (date(2026, 8, 10), date(2026, 8, 10))})
+        self.assertEqual(ui.exports[1]["ID"].tolist(), ["G-1002", "G-1003"])
+        self.assertIn(("Casos no recorte", 2), ui.metrics)
+
+    def test_filtro_vazio_nao_inventa_grafico_ou_export_analitico(self):
+        ui = render("garantia", self.registros(), state={"gp_periodo": "Personalizado",
+                    "gp_datas": (date(2025, 1, 1), date(2025, 1, 2))})
+        self.assertEqual(ui.charts, [])
+        self.assertEqual(ui.metrics, [])
+        self.assertEqual(len(ui.exports), 1)
+        self.assertEqual(len(ui.exports[0]), 5)
+        self.assertTrue(any("Nenhum caso para os filtros escolhidos" in m for m in ui.messages))
+
+    def test_selecao_sku_obsoleta_e_restrita_ao_recorte_corrente(self):
+        ui = render("garantia", self.registros(), state={
+            "gp_visao": "Produtos e causas", "gp_produto": "SKU-C",
+            "gp_canal": "E-commerce",
+        })
+        self.assertEqual(set(ui.selectors["gp_produto"]["options"]), {"SKU-EXEMPLO", "SKU-B"})
+        sku = ui.session_state["gp_produto"]
+        self.assertIn(sku, {"SKU-EXEMPLO", "SKU-B"})
+        details = next(t for t in ui.tables if "Causa diagnosticada" in t.columns and "Protocolo" in t.columns)
+        self.assertEqual(details["SKU"].tolist(), [sku])
+        self.assertIn(("Casos deste produto", 1), ui.metrics)
+        self.assertEqual(ui.exports[1]["SKU"].tolist(), [sku])
+        self.assertEqual(ui.exports[1]["ID"].tolist(), details["Protocolo"].tolist())
+
+    def test_detalhe_nao_confunde_relato_sem_diagnostico_com_fabricacao(self):
+        ui = render("garantia", self.registros(), state={
+            "gp_visao": "Produtos e causas", "gp_produto": "SKU-EXEMPLO",
+        })
+        self.assertIn(("Casos deste produto", 2), ui.metrics)
+        self.assertIn(("Com diagnóstico", "1 / 2"), ui.metrics)
+        self.assertIn(("Fabricação diagnosticada", 1), ui.metrics)
+        cross = next(t for t in ui.tables if t.index.name == "Defeito relatado")
+        self.assertEqual(cross.loc["Não liga", "Sem diagnóstico"], 1)
+        self.assertEqual(cross.loc["Não liga", "Defeito de fabricação"], 1)
+        details = next(t for t in ui.tables if "Causa diagnosticada" in t.columns and "Protocolo" in t.columns)
+        self.assertEqual(details["Protocolo"].tolist(), ["G-1001", "G-1002"])
+
+    def test_custo_encerrado_so_persistido_zero_conhecido_e_ausente_distintos(self):
+        registros = self.registros()
+        registros[1]["pecas"] = [{"sku": "PECA-TESTE", "nome": "Peça fictícia", "qtd": 2, "custo": 4000}]
+        meta = copy.deepcopy(META)
+        meta["custo_unitario"] = {"SKU-EXEMPLO": 99999, "PECA-TESTE": 99999}
+        ui = render("admin", registros, meta=meta)
+        self.assertIn(("Custo dos serviços encerrados", "R$ 50,00"), ui.metrics)
+        self.assertTrue(any("Valor informado em 2 de 3 casos" in m for m in ui.messages))
+        selected = ui.exports[1].set_index("ID")
+        self.assertEqual(selected.loc["G-1001", "Custo informado"], 30)
+        self.assertEqual(selected.loc["G-1002", "Custo informado"], 0)
+        self.assertTrue(pd.isna(selected.loc["G-1003", "Custo informado"]))
+        products = next(t for t in ui.tables if "Com custo" in t.columns)
+        row = products.set_index("SKU").loc["SKU-EXEMPLO"]
+        self.assertEqual(row["Custo informado"], "R$ 30,00")
+        self.assertEqual(row["Com custo"], 2)
+
+    def test_operacao_tempo_e_pecas_rastreiam_indice_apos_cancelada_e_filtro(self):
+        registros = [caso("G-1000", status="Cancelada", data_envio="2026-08-13",
+                          pecas=[{"sku": "CANCEL", "nome": "Ignorar cancelada", "qtd": 99, "custo": 99}]),
+                     caso("G-1001", canal="Distribuição",
+                          pecas=[{"sku": "PECA-TESTE", "nome": "Peça fictícia", "qtd": 2, "custo": 7}]),
+                     caso("G-1002", canal="E-commerce", data_envio="2026-08-20",
+                          pecas=[{"sku": "OUTRO", "nome": "Ignorar outro canal", "qtd": 99, "custo": 99}])]
+        ui = render("admin", registros, state={"gp_canal": "Distribuição", "gp_visao": "Operação e custos"})
+        self.assertIn(("⏱️ Tempo na empresa (chegada→envio)", "3 dias"), ui.metrics)
+        self.assertTrue(any("Prazo calculado com 1 de 1" in m for m in ui.messages))
+        parts = next(t for t in ui.tables if "Peça / serviço" in t.columns)
+        self.assertEqual(parts["Peça / serviço"].tolist(), ["PECA-TESTE · Peça fictícia"])
+        self.assertEqual(parts["Quantidade"].tolist(), [2])
+        self.assertEqual(parts["Custo lançado"].tolist(), ["R$ 14,00"])
+        self.assertEqual(ui.exports[1]["ID"].tolist(), ["G-1001"])
+
+    def test_operacao_sem_chegada_nao_inventa_dias_na_empresa(self):
+        ui = render("garantia", self.registros(), state={"gp_visao": "Operação e custos"})
+        pending = next(t for t in ui.tables if "Dias desde a chegada" in t.columns).set_index("Protocolo")
+        self.assertEqual(set(pending.index), {"G-1002", "G-1003", "G-1005"})
+        self.assertTrue(pd.isna(pending.loc["G-1005", "Dias desde a chegada"]))
+        self.assertTrue(pd.isna(pending.loc["G-1003", "Dias desde a chegada"]))
+        self.assertTrue(any("sem data, não se presume permanência na empresa" in m for m in ui.messages))
+
+    def test_trocas_de_visao_filtro_e_selecao_nao_mutam_dados_ou_catalogo(self):
+        registros = self.registros()
+        produtos = pd.DataFrame([{"code": "SKU-EXEMPLO", "name": "Nome do catálogo"}])
+        meta = copy.deepcopy(META)
+        original, original_meta, original_products = copy.deepcopy(registros), copy.deepcopy(meta), produtos.copy(deep=True)
+        state = None
+        for view in ("Visão geral", "Produtos e causas", "Operação e custos"):
+            state = dict(state or {}, gp_visao=view, gp_canal="E-commerce")
+            state = render("garantia", registros, meta=meta, produtos=produtos, state=state).session_state
+        self.assertEqual(registros, original)
+        self.assertEqual(meta, original_meta)
+        pd.testing.assert_frame_equal(produtos, original_products)
+
+    def test_painel_nao_expoe_saida_para_papel_sem_permissao(self):
+        for role in (None, "vendedor", "desconhecido"):
+            with self.subTest(role=role):
+                ui = FakeUI(role)
+                with patch.object(painel_garantias, "st", ui), patch.object(painel_garantias.ui, "st", ui):
+                    painel_garantias.render_painel(
+                        self.registros(), pd.DataFrame(), META, role=role,
+                        tempo_info=NS["_garantia_tempo_info"],
+                        periodo_vendas=NS["_garantia_periodo_vendas"],
+                        casos_periodo=NS["_garantias_no_periodo_vendas"],
+                        relacao_vendas=NS["_garantia_relacao_vendas"],
+                        csv_download=lambda *a, **kw: self.fail("Exportação sem papel autorizado"))
+                self.assertEqual((ui.messages, ui.tables, ui.metrics, ui.charts), ([], [], [], []))
+
+    def test_ranking_custo_totalmente_ausente_preserva_desconhecido(self):
+        ui = render("garantia", [caso(custo_total=None)], state={"gp_ranking": "Custo informado"})
+        self.assertIn(("Custo dos serviços encerrados", "—"), ui.metrics)
+        self.assertTrue(any("Ainda não há custos informados para ordenar" in m for m in ui.messages))
+        self.assertEqual(len(ui.charts), 1)  # apenas evolução de registros, sem custo fictício
+        self.assertTrue(pd.isna(ui.exports[1].iloc[0]["Custo informado"]))
 
 
 if __name__ == "__main__":

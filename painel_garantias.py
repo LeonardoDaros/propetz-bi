@@ -421,6 +421,9 @@ def _render_content(garantias, products_df, meta, *, role, tempo_info, periodo_v
         summary = ga.product_summary(selected)
         # O motor mantém os índices de entrada mesmo após excluir canceladas e aplicar filtros.
         selected_records = [records[i] for i in selected.index]
+        estimated = sum(bool(g.get("custo_produto_trocado_estimado")) for g in selected_records)
+        if estimated:
+            st.caption(f"{estimated} casos incluem custo estimado do produto trocado; o histórico não permitiu recuperar o valor original.")
         export_frame = selected
         if view == "Produtos e causas":
             export_frame = _product_detail(selected, summary)
@@ -441,6 +444,7 @@ def _render_content(garantias, products_df, meta, *, role, tempo_info, periodo_v
             "resultado": "Resultado", "criado": "Data de registro", "custo_registrado": "Custo informado",
             "encerrado": "Serviço encerrado", "pendente_frete": "Frete pendente", "ativo_tecnico": "Pendência técnica",
             "dias_empresa": "Dias desde chegada", "dias_resolucao": "Dias chegada até envio", "data_envio": "Data de envio", "prioridade": "Prioridade"})
+        export["Custo troca estimado"] = [bool(records[i].get("custo_produto_trocado_estimado")) for i in export_frame.index]
         csv_download(export, export_label, "garantias_analise.csv", "gp_export")
 
 
@@ -478,6 +482,8 @@ def _export_historico(garantias, csv_download):
                          "Frete vinda": g.get("frete_vinda", 0), "Frete volta": g.get("frete_volta", 0),
                          "Sem frete (justif.)": g.get("frete_obs", ""),
                          "Custo total": g.get("custo_total"), "Resultado": g.get("resultado"),
+                         "Custo produto trocado": g.get("custo_produto_trocado"),
+                         "Custo troca estimado": bool(g.get("custo_produto_trocado_estimado")),
                          "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
                          "Registrado por": g.get("criado_por")})
         csv_download(pd.DataFrame(flat), "⬇️ Baixar garantias deste perfil (Excel/CSV)",

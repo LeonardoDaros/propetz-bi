@@ -39,6 +39,8 @@ try {
         'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py',
         'ficha_cliente_dados.py', 'ficha_cliente_ui.py',
         'teste_ficha_cliente_dados.py', 'teste_ficha_cliente_interface.py',
+        'teste_auditoria_comercial.py', 'teste_auditoria_garantias.py',
+        'teste_auditoria_integracao.py', 'teste_auditoria_seguranca.py',
         'painel_garantias.py', 'garantia_analytics.py', 'teste_painel_garantias.py',
         'exportacao_csv.py', 'teste_exportacao_csv.py',
         'requirements.txt', '.gitignore',
@@ -75,7 +77,7 @@ try {
                'Integre o main remoto preservando as alteracoes locais antes de repetir; veja DEPLOY.md. Nao use push --force.')
     }
     # Verifica todos os commits pendentes, inclusive arquivos depois removidos.
-    $pending = (Invoke-DeployGit -GitArgs @('log', '--format=', '--name-only', '-z', ($remoteBefore + '..HEAD'))).Output
+    $pending = (Invoke-DeployGit -GitArgs @('log', '--diff-merges=first-parent', '--format=', '--name-only', '-z', ($remoteBefore + '..HEAD'))).Output
     $unexpected = @(Get-DeployPaths -Raw $pending | Where-Object { -not (Test-AllowedDeployPath $_) })
     if ($unexpected.Count) {
         throw ('Ha commits locais pendentes com arquivos fora da lista de publicacao. Revise-os antes de enviar: ' + ($unexpected -join ', '))

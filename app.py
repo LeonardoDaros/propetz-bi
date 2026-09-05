@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import openpyxl
 import yaml
 import os
+import io
 import hashlib
 import hmac
 import html
@@ -46,8 +47,13 @@ USERS_FILE = os.path.join(os.path.dirname(__file__), "users.yaml")
 
 def load_users():
     if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
+        with open(USERS_FILE, 'rb') as f:
+            content = f.read()
+        users = yaml.safe_load(content.decode('utf-8'))
+        if isinstance(users, dict):
+            # Metadado apenas da leitura; save_users nunca o publica no YAML.
+            users['_source_digest'] = hashlib.sha256(content).hexdigest()
+        return users
     # BREAK-GLASS: só quando o users.yaml some E não dá p/ restaurar do state
     # (não acontece em operação normal — users.yaml vem no clone + branch state).
     # NENHUMA senha em texto puro no código (as antigas nome2026 vazaram). A
@@ -97,10 +103,86 @@ def _verify_password(pwd, stored):
     except Exception:
         return False, False
 
+def _stage_local_bytes(path, data):
+    """Prepara troca atômica sem alterar a versão vigente."""
+    staged = path + '.' + uuid.uuid4().hex + '.tmp'
+    try:
+        with open(staged, 'wb') as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+    except OSError:
+        if os.path.exists(staged):
+            os.remove(staged)
+        raise
+    return staged
+
+
 def save_users(users_data):
-    with open(USERS_FILE, 'w', encoding='utf-8') as f:
-        yaml.dump(users_data, f, default_flow_style=False, allow_unicode=True)
-    _push_state_file("users.yaml")
+    """Confirma no GitHub antes de trocar o cadastro local. Falha nunca vira sucesso."""
+    if not isinstance(users_data, dict) or not isinstance(users_data.get('users'), dict):
+        raise ValueError('O cadastro de usuários é inválido.')
+    expected = users_data.get('_source_digest')
+    payload = {key: value for key, value in users_data.items() if key != '_source_digest'}
+    content = yaml.safe_dump(payload, default_flow_style=False, allow_unicode=True).encode('utf-8')
+    token = _gh_token()
+    with _GH_WRITE_LOCK:
+        staged = _stage_local_bytes(USERS_FILE, content)
+        try:
+            if token:
+                current, sha = _gh_get_file('users.yaml', _GH_STATE_BRANCH, token=token)
+                if current is None or not sha:
+                    raise ValueError('Não foi possível ler o cadastro atual no GitHub. '
+                                     'Nenhuma alteração foi enviada; tente novamente.')
+                if not expected or hashlib.sha256(current).hexdigest() != expected:
+                    raise ValueError('O cadastro mudou desde a leitura desta tela. Nenhuma alteração foi enviada. '
+                                     'Reinicie o app para restaurar o cadastro atual e refaça a alteração.')
+                confirmed, status = _gh_put_file_status('users.yaml', content, 'Estado: users.yaml',
+                                                        _GH_STATE_BRANCH, sha, token)
+                if not confirmed:
+                    if status in (409, 422):
+                        raise ValueError('Outra alteração de cadastro ocorreu durante o envio. '
+                                         'Nada foi sobrescrito; atualize o cadastro antes de tentar novamente.')
+                    raise ValueError('Não foi possível confirmar o cadastro no GitHub. '
+                                     'O cadastro local anterior foi preservado; tente novamente.')
+            elif expected and os.path.exists(USERS_FILE):
+                with open(USERS_FILE, 'rb') as current:
+                    if hashlib.sha256(current.read()).hexdigest() != expected:
+                        raise ValueError('O cadastro mudou desde a leitura desta tela. '
+                                         'Atualize a página e refaça a alteração; nada foi sobrescrito.')
+            try:
+                os.replace(staged, USERS_FILE)
+            except OSError:
+                if token:
+                    raise ValueError('O cadastro foi salvo no GitHub, mas não pôde ser aplicado '
+                                     'neste servidor. Reinicie o app para restaurar a versão salva.') from None
+                raise
+        finally:
+            if os.path.exists(staged):
+                os.remove(staged)
+    return bool(token)
+
+
+def _save_users_from_admin(users_data, message):
+    """Revalida o administrador no envio e diferencia gravação local/remota."""
+    try:
+        if not st.session_state.get('authenticated') or _session_expired():
+            raise ValueError('Entre novamente para alterar o cadastro.')
+        error = _refresh_session_access()
+        if error:
+            raise ValueError(error)
+        if st.session_state.get('role') != 'admin':
+            raise ValueError('Somente administradores podem alterar o cadastro.')
+        remote = save_users(users_data)
+    except (ValueError, OSError) as error:
+        st.error(str(error))
+        return False
+    if remote:
+        st.success(message)
+    else:
+        st.warning(message + ' Salvo apenas neste servidor; sem persistência remota, '
+                   'a alteração pode ser perdida no reinício do Cloud.')
+    return True
 
 def verify_login(username, password):
     users = load_users()
@@ -309,8 +391,19 @@ def _clients_for_access(df_clients, role, vendor_filter):
     if error:
         raise ValueError(error)
     if role == 'vendedor':
-        return df_clients[df_clients['vendor'].fillna('').astype(str).str.strip() == vendor_filter.strip()].copy()
-    return df_clients.copy()
+        scoped = df_clients[df_clients['vendor'].fillna('').astype(str).str.strip() == vendor_filter.strip()].copy()
+    else:
+        scoped = df_clients.copy()
+    if role in ('admin', 'diretor', 'vendedor'):
+        # A identidade é global: recortar a carteira não pode esconder outra
+        # linha com o mesmo ID, pois produtos e contatos se vinculam pelo ID.
+        ids = df_clients['id'].fillna('').astype(str).str.strip()
+        scoped_ids = scoped['id'].fillna('').astype(str).str.strip()
+        ambiguous = set(ids[ids.duplicated(keep=False)])
+        if scoped_ids.eq('').any() or scoped_ids.isin(ambiguous).any():
+            raise ValueError('Há códigos de cliente vazios ou duplicados na base da carteira. '
+                             'Corrija a origem antes de consultar ou registrar contatos.')
+    return scoped
 
 def _refresh_session_access():
     """Revalida o cadastro local a cada interação, inclusive após troca de carteira."""
@@ -496,6 +589,8 @@ def add_inactivation_request(client_id, client_name, vendor, motivo="", observac
         return {"requests": reqs[-500:]}
 
     ok_client = inactivate_clients([cid]) if direct_approve else True
+    if not ok_client:
+        return False
     _, ok_req = _gh_mutate_json("inactive_requests.json", INACTIVE_REQUESTS_FILE, apply, {"requests": []})
     if flags.get("dup"):
         return False  # já existia pendente (não é falha de gravação)
@@ -519,6 +614,8 @@ def decide_inactivation_request(client_id, approve, decided_by):
         return {"requests": reqs[-500:]}
 
     ok_client = inactivate_clients([cid]) if approve else True
+    if not ok_client:
+        return False
     _, ok_req = _gh_mutate_json("inactive_requests.json", INACTIVE_REQUESTS_FILE, apply, {"requests": []})
     return ok_req and ok_client
 
@@ -688,70 +785,144 @@ def _garantias_no_periodo_vendas(registros, periodo):
 def _garantia_relacao_vendas(casos, unidades):
     """Relação descritiva; denominador ausente/inválido não vira zero por cento."""
     try:
+        if isinstance(unidades, bool):
+            return None
         unidades = float(unidades)
         return casos / unidades if math.isfinite(unidades) and unidades > 0 else None
     except (TypeError, ValueError, OverflowError):
         return None
 
 
+def _garantia_status(status):
+    names = {s.casefold(): s for s in STATUS_GARANTIA}
+    names.update({k.casefold(): v for k, v in _STATUS_LEGADO.items()})
+    text = str(status or "").strip()
+    return names.get(text.casefold(), text)
+
+
+def _garantia_versao(registro):
+    """Versão do conteúdo lido no servidor, independente de outros casos."""
+    import hashlib
+    import json
+    record = dict(registro)
+    record["status"] = _garantia_status(record.get("status"))
+    return hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _garantia_autorizar(*, fechada=False, excluir=False):
+    if st.session_state.get("authenticated") is not True or _session_expired():
+        raise ValueError("Sua sessão não permite alterar garantias. Entre novamente.")
+    error = _refresh_session_access()
+    if error:
+        raise ValueError(error)
+    if not can_manage_garantias():
+        raise ValueError("Seu perfil não permite alterar garantias.")
+    if excluir and st.session_state.get("role") != "admin":
+        raise ValueError("Somente o admin pode excluir uma simulação.")
+    if fechada and not can_edit_garantia_fechada():
+        raise ValueError("Este atendimento foi finalizado. Somente o master ou o admin podem alterá-lo.")
+
+
+def _garantia_registros_estado(data):
+    if not isinstance(data, dict) or not isinstance(data.get("garantias"), list):
+        raise ValueError("O histórico de garantias está inconsistente. Nenhuma alteração foi salva.")
+    records = data["garantias"]
+    if any(not isinstance(g, dict) for g in records):
+        raise ValueError("O histórico contém um registro inválido. Nenhuma alteração foi salva.")
+    return records
+
+
 def load_garantias():
     data = _read_state_json("garantias.json", GARANTIAS_FILE, {"garantias": []})
-    try:
-        gs = data.get("garantias", [])
-    except Exception:
+    gs = data.get("garantias") if isinstance(data, dict) else None
+    if not isinstance(gs, list):
+        st.warning("Histórico de garantias indisponível ou inconsistente. Confira a fonte antes de registrar.")
         return []
-    for g in gs:  # migração transparente de status antigos
-        if g.get("status") in _STATUS_LEGADO:
-            g["status"] = _STATUS_LEGADO[g["status"]]
-    return gs
+    valid = []
+    for g in gs:
+        if not isinstance(g, dict) or not isinstance(g.get("id"), str) or not g["id"].strip():
+            st.warning("Um registro de garantia inválido não pôde ser exibido; confira a fonte.")
+            continue
+        valid.append(dict(g, status=_garantia_status(g.get("status"))))
+    return valid
 
 def add_garantia(reg):
-    """Cria um registro de garantia (id sequencial G-0001...) de forma atômica.
-    Retorna (id, ok)."""
-    quem = st.session_state.get("user_name", "")
-    agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+    """Cria registro após revalidar a sessão em cada tentativa de escrita."""
     out = {}
 
     def apply(d):
-        gs = list(d.get("garantias", []))
-        seq = 1 + max([int(g["id"].split("-")[1]) for g in gs if str(g.get("id", "")).startswith("G-")] or [0])
-        gid = f"G-{seq:04d}"
+        _garantia_autorizar()
+        gs = _garantia_registros_estado(d)
+        numbers = []
+        for g in gs:
+            gid = str(g.get("id", ""))
+            if gid.startswith("G-") and gid[2:].isdigit():
+                numbers.append(int(gid[2:]))
+        gid = f"G-{1 + max(numbers or [0]):04d}"
+        agora = datetime.now().strftime("%Y-%m-%d %H:%M")
+        quem = st.session_state.get("user_name", "")
         novo = dict(reg)
         novo.update({"id": gid, "criado_em": agora, "criado_por": quem, "status": "Aguardando chegada",
                      "historico": [{"em": agora, "por": quem, "acao": "Registro criado"}]})
-        gs.append(novo)
         out["id"] = gid
-        return {"garantias": gs}
+        return {**d, "garantias": [*gs, novo]}
 
-    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
-    return out.get("id"), ok
+    try:
+        _garantia_autorizar()
+        _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+        return (out.get("id") if ok else None), ok
+    except (ValueError, TypeError) as error:
+        st.session_state["_gar_save_error"] = str(error)
+        return None, False
 
-def update_garantia(gid, updates, acao):
-    """Atualiza um registro (merge) de forma atômica + linha de histórico."""
-    quem = st.session_state.get("user_name", "")
-    agora = datetime.now().strftime("%Y-%m-%d %H:%M")
-
+def update_garantia(gid, updates, acao, *, expected_version=None):
+    """Revalida sessão, estado finalizado e versão do formulário em cada retry."""
     def apply(d):
-        gs = list(d.get("garantias", []))
-        for g in gs:
-            if g.get("id") == gid:
-                g.update(updates)
-                g.setdefault("historico", []).append({"em": agora, "por": quem, "acao": acao})
-                g["historico"] = g["historico"][-300:]  # cap: histórico não infla o json sem limite
-                break
-        return {"garantias": gs}
+        _garantia_autorizar()
+        gs = _garantia_registros_estado(d)
+        matches = [g for g in gs if g.get("id") == gid]
+        if len(matches) != 1:
+            raise ValueError("O atendimento não está disponível com um ID único. Recarregue a fila.")
+        current = matches[0]
+        status = _garantia_status(current.get("status"))
+        _garantia_autorizar(fechada=status in STATUS_FINALIZADOS or updates.get("status") == "Cancelada")
+        if not expected_version or _garantia_versao(current) != expected_version:
+            raise ValueError("Este atendimento mudou desde que você abriu a ficha. Recarregue e confira antes de salvar.")
+        if any(key in updates for key in ("id", "criado_em", "criado_por", "historico")):
+            raise ValueError("A identidade e o histórico do atendimento não podem ser substituídos.")
+        novo = {**current, **updates}
+        history = current.get("historico", [])
+        if not isinstance(history, list):
+            raise ValueError("Histórico do atendimento inválido. Nenhuma alteração foi salva.")
+        action = f"CORREÇÃO PÓS-FECHAMENTO (era {status}): {acao}" if status in STATUS_FINALIZADOS else acao
+        novo["historico"] = [*history, {"em": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                      "por": st.session_state.get("user_name", ""), "acao": action}][-300:]
+        return {**d, "garantias": [novo if g is current else g for g in gs]}
 
-    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
-    return ok
+    try:
+        _garantia_autorizar()
+        _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+        return ok
+    except (ValueError, TypeError) as error:
+        st.session_state["_gar_save_error"] = str(error)
+        return False
 
 def delete_garantia(gid):
-    """EXCLUSÃO REAL (some da base, sem rastro) — SÓ o admin, para limpar
-    simulações/testes. Caso real nunca se exclui: usa o status Cancelada
-    (exclusão lógica com histórico)."""
+    """Exclusão real de simulações, autorizada somente para admin."""
     def apply(d):
-        return {"garantias": [g for g in d.get("garantias", []) if g.get("id") != gid]}
-    _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
-    return ok
+        _garantia_autorizar(excluir=True)
+        gs = _garantia_registros_estado(d)
+        if sum(g.get("id") == gid for g in gs) != 1:
+            raise ValueError("O atendimento não está disponível com um ID único. Recarregue a fila.")
+        return {**d, "garantias": [g for g in gs if g.get("id") != gid]}
+    try:
+        _garantia_autorizar(excluir=True)
+        _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+        return ok
+    except (ValueError, TypeError) as error:
+        st.session_state["_gar_save_error"] = str(error)
+        return False
 
 SILVER_DIST_FILE = os.path.join(os.path.dirname(__file__), "silver_distribuicao.json")
 
@@ -787,18 +958,59 @@ def _link_rastreio(cod):
         return "—"
     return f"[{cod}](https://rastreamento.correios.com.br/app/index.php?objeto={cod})"
 
+def _garantia_custo_troca(g, custo_map):
+    """Snapshot da troca; recupera legado só quando o total tem decomposição conhecida."""
+    def number(value):
+        if isinstance(value, bool):
+            raise ValueError("Booleano não é custo")
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Custo inválido")
+        return value
+
+    try:
+        saved = number(g.get("custo_produto_trocado"))
+        return saved, bool(g.get("custo_produto_trocado_estimado", False))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    if g.get("resultado") == "Trocada por produto novo":
+        try:
+            total = number(g.get("custo_total"))
+            parts = g.get("pecas", [])
+            if not isinstance(parts, list):
+                raise ValueError("Peças inválidas")
+            expenses = sum(number(p.get("qtd", 1)) * number(p.get("custo")) for p in parts)
+            expenses += sum(number(g.get(k, 0) or 0) for k in ("frete_vinda", "frete_volta", "custo_extra"))
+            # Custo zero de peça sem snapshot era tratado como ausente pelo
+            # código legado. Nesse caso o residual não prova o custo da troca.
+            if any(number(p.get("custo")) == 0 and not str(p.get("sku", "")).startswith("SERV-") for p in parts):
+                raise ValueError("Peça legada sem custo comprovado")
+            residual = total - expenses
+            if not math.isfinite(residual) or residual < -0.005:
+                raise ValueError("Total não reconcilia com os componentes")
+            return round(max(0.0, residual), 2), False
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
+    try:
+        return number(custo_map.get(str(g.get("produto_sku", "")).strip())), True
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, True
+
+
 def _garantia_custo_total(g, custo_map):
     """Custo real do caso: peças + fretes (vinda e volta) + extra + produto
     inteiro se trocado por novo."""
     total = 0.0
     for p in g.get("pecas", []):
-        c = p.get("custo") or custo_map.get(str(p.get("sku", "")).strip(), 0) or 0
+        c = p.get("custo")
+        if c is None:
+            c = custo_map.get(str(p.get("sku", "")).strip(), 0) or 0
         total += (p.get("qtd", 1) or 1) * c
     total += g.get("frete_vinda", 0) or 0
     total += g.get("frete_volta", 0) or 0
     total += g.get("custo_extra", 0) or 0   # legado (registros antigos)
     if g.get("resultado") == "Trocada por produto novo":
-        total += custo_map.get(str(g.get("produto_sku", "")).strip(), 0) or 0
+        total += _garantia_custo_troca(g, custo_map)[0]
     return round(total, 2)
 
 # ============================================================
@@ -949,11 +1161,24 @@ def _gh_put_file_status(path, content_bytes, message, branch, sha, token):
         return (False, 0)
 
 def _write_local_json(local_path, data):
+    """Troca atômica do arquivo; falha preserva a versão anterior."""
+    temp_path = str(local_path) + '.' + uuid.uuid4().hex + '.tmp'
     try:
-        with open(local_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
-    except Exception:
-        pass
+        payload = json.dumps(data, ensure_ascii=False, indent=1)
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, local_path)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
 
 def _gh_mutate_json(remote_name, local_path, apply_fn, default, token=None):
     """READ-MODIFY-WRITE ATÔMICO do estado no branch 'state'. Retorna (dados, ok):
@@ -962,22 +1187,23 @@ def _gh_mutate_json(remote_name, local_path, apply_fn, default, token=None):
       duas inativações simultâneas NÃO se sobrescrevem.
     - ok=True só se REALMENTE persistiu (ou foi no-op). Se falhou (GitHub fora/token
       inválido), ok=False e NÃO grava local — para não dar falsa sensação de salvo.
-    - sem token: modo local (ok=True, melhor esforço offline).
+    - sem token: modo local; sucesso exige troca atômica confirmada no disco.
     Serializa no processo via _GH_WRITE_LOCK; o retry cobre concorrência entre containers.
     token: capturado na thread principal e passado adiante quando rodando em background."""
     tok = token or _gh_token()
     if not tok:
-        cur = default
-        if os.path.exists(local_path):
-            try:
-                with open(local_path, encoding='utf-8') as f:
-                    cur = json.load(f)
-            except Exception:
-                cur = default
-        new = apply_fn(cur)
-        _write_local_json(local_path, new)
-        _STATE_RAW_CACHE.pop(remote_name, None)
-        return new, True
+        with _GH_WRITE_LOCK:
+            cur = default
+            if os.path.exists(local_path):
+                try:
+                    with open(local_path, encoding='utf-8') as f:
+                        cur = json.load(f)
+                except (OSError, ValueError):
+                    return None, False  # histórico ilegível não vira uma base vazia.
+            new = apply_fn(cur)
+            ok = _write_local_json(local_path, new)
+            _STATE_RAW_CACHE.pop(remote_name, None)
+            return new, bool(ok)
     with _GH_WRITE_LOCK:
         new, ok = None, False
         for _ in range(5):
@@ -1258,8 +1484,8 @@ def load_data():
     # Search for any .xlsx file in the app directory
     app_dir = os.path.dirname(__file__)
     possible_names = [
-        "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx",
         "Relatorio Distribuidores Mensal.xlsx",
+        "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx",
     ]
     possible_paths = []
     for name in possible_names:
@@ -1295,25 +1521,96 @@ def load_data():
 
     return process_excel(xlsx_path)
 
-def _handle_planilha_upload(uploaded):
-    """Salva a planilha enviada localmente e tenta commitá-la no branch main
-    do GitHub (persistência real — sobrevive a reinícios do Streamlit Cloud).
-    Retorna True se o commit remoto funcionou."""
-    data = bytes(uploaded.getbuffer())
-    app_dir = os.path.dirname(__file__)
-    with open(os.path.join(app_dir, "Relatorio Distribuidores Mensal.xlsx"), "wb") as f:
-        f.write(data)
-    # Remove o nome antigo para não sombrear a planilha nova na ordem de busca
-    old = os.path.join(app_dir, "RELATORIOS ESTADO-CLIENTES - ATUALIZADO.xlsx")
+def _validate_planilha_upload(data):
+    """Executa o mesmo parser antes de substituir ou publicar a fonte."""
     try:
-        if os.path.exists(old):
-            os.remove(old)
+        workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        try:
+            if 'IA' not in workbook.sheetnames:
+                raise ValueError('A planilha precisa conter a aba IA.')
+        finally:
+            workbook.close()
+        result = process_excel(io.BytesIO(data))
+        clients, months = result[0], result[3]
+        if clients is None or clients.empty or not months:
+            raise ValueError('A aba IA precisa conter clientes e meses válidos.')
+        if any(_parse_label_ym(month) is None for month in months):
+            raise ValueError('Há rótulos de mês inválidos na aba IA.')
+        ids = clients['id'].astype(str).str.strip()
+        if ids.eq('').any() or ids.duplicated().any():
+            raise ValueError('A aba IA precisa conter códigos de cliente únicos e preenchidos.')
+    except ValueError:
+        raise
     except Exception:
-        pass
-    pushed = _gh_put_file("Relatorio Distribuidores Mensal.xlsx", data,
-                          "Atualização da planilha via app", "main")
+        raise ValueError('O arquivo não é uma planilha válida para este painel. '
+                         'Confira o arquivo e a estrutura da aba IA.') from None
+
+
+def _handle_planilha_upload(uploaded):
+    """Valida, preserva a fonte e confirma o remoto antes da troca local."""
+    if not st.session_state.get('authenticated') or _session_expired():
+        raise ValueError('Entre novamente para atualizar a base.')
+    error = _refresh_session_access()
+    if error:
+        raise ValueError(error)
+    if st.session_state.get('role') != 'admin':
+        raise ValueError('Somente administradores podem atualizar a base.')
+    data = bytes(uploaded.getbuffer())
+    _validate_planilha_upload(data)
+    app_dir = os.path.dirname(__file__)
+    target = os.path.join(app_dir, 'Relatorio Distribuidores Mensal.xlsx')
+    token = _gh_token()
+    with _GH_WRITE_LOCK:
+        staged = _stage_local_bytes(target, data)
+        try:
+            if os.path.exists(target):
+                with open(target, 'rb') as current:
+                    previous = current.read()
+                backup = target + '.before-upload.backup'
+                backup_stage = _stage_local_bytes(backup, previous)
+                try:
+                    os.replace(backup_stage, backup)
+                finally:
+                    if os.path.exists(backup_stage):
+                        os.remove(backup_stage)
+            if token and not _gh_put_file('Relatorio Distribuidores Mensal.xlsx', data,
+                                          'Atualização da planilha via app', 'main', token=token):
+                raise ValueError('Não foi possível confirmar a planilha no GitHub. '
+                                 'A base anterior foi preservada; tente novamente.')
+            try:
+                os.replace(staged, target)
+            except OSError:
+                if token:
+                    raise ValueError('A planilha foi salva no GitHub, mas não pôde ser aplicada '
+                                     'neste servidor. Aguarde a atualização do app ou reinicie-o.') from None
+                raise
+        finally:
+            if os.path.exists(staged):
+                os.remove(staged)
     st.cache_data.clear()
-    return pushed
+    return bool(token)
+
+
+def _render_planilha_upload(label, key):
+    feedback = st.session_state.pop('_planilha_upload_feedback', None)
+    if feedback:
+        (st.success if feedback[0] else st.warning)(feedback[1])
+    generation = st.session_state.get('_planilha_upload_generation', 0)
+    uploaded = st.file_uploader(label, type=['xlsx'], key=f'{key}_{generation}')
+    if uploaded is None:
+        return
+    try:
+        remote = _handle_planilha_upload(uploaded)
+    except (ValueError, OSError) as error:
+        st.error(str(error))
+        return
+    # Novo widget vazio no rerun: não repete o PUT do arquivo já confirmado.
+    st.session_state['_planilha_upload_generation'] = generation + 1
+    message = ('Planilha validada e salva no GitHub. O app pode reiniciar para aplicar a atualização.'
+               if remote else 'Planilha validada e salva apenas neste servidor. Sem persistência remota, '
+                              'ela pode ser perdida no reinício do Cloud.')
+    st.session_state['_planilha_upload_feedback'] = (remote, message)
+    st.rerun()
 
 # ============================================================
 # CURVA ABC POR VALOR — abc_valor.json traz o faturamento por SKU do canal
@@ -1999,7 +2296,8 @@ def page_garantias(products_df, df_clients):
                     st.session_state["gar_flash_msg"] = f"✅ Garantia **{gid}** registrada — já está na fila da Bancada."
                     st.rerun()
                 else:
-                    st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
+                    st.error(st.session_state.pop("_gar_save_error", None) or
+                             "Não consegui salvar no GitHub agora. Tente de novo em instantes.")
 
     # ---------------- BANCADA / FILA (sub-abas por status) ----------------
     with tab_bancada:
@@ -2103,6 +2401,8 @@ def page_garantias(products_df, df_clients):
                                         f"{g.get('cliente_final') or '—'} | "
                                         f"**NF da venda ao cliente final:** {g.get('cliente_final_nf') or '—'} | "
                                         f"**Chave:** {f'`{_chv}`' if _chv else '—'}")
+                    if g.get("custo_produto_trocado_estimado"):
+                        _linha_meta += " | **Custo da troca:** estimado; o histórico não permitiu recuperar o valor original."
                     st.markdown(_linha_meta)
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                                 f"— {g.get('defeito_obs') or 'sem obs.'}")
@@ -2148,6 +2448,18 @@ def page_garantias(products_df, df_clients):
                     # "Cancelada" só aparece para master/admin (cancelar = exclusão lógica)
                     _status_opcoes = STATUS_GARANTIA if can_edit_garantia_fechada() \
                         else [s for s in STATUS_GARANTIA if s != "Cancelada"]
+                    snapshot_key = f"_gar_snapshot_{tk}_{g['id']}"
+                    if f"st_{tk}_{g['id']}" not in st.session_state:
+                        # Formulário novo após descartar os widgets da ficha.
+                        st.session_state.pop(snapshot_key, None)
+                    snapshot = st.session_state.setdefault(snapshot_key, _garantia_versao(g))
+                    if snapshot != _garantia_versao(g):
+                        st.warning("Este atendimento recebeu uma alteração. Seu preenchimento foi mantido; recarregue para conferir a versão atual.")
+                        if st.button("Recarregar atendimento", key=f"gar_reload_{tk}_{g['id']}"):
+                            for key in list(st.session_state):
+                                if key.endswith(f"_{tk}_{g['id']}") and not key.startswith("gar_reload_"):
+                                    st.session_state.pop(key, None)
+                            st.rerun()
                     with st.form(f"gar_upd_{tk}_{g['id']}"):
                         c1, c2 = st.columns(2)
                         novo_status = c1.selectbox("Status", _status_opcoes,
@@ -2202,6 +2514,11 @@ def page_garantias(products_df, df_clients):
                         _serv_por_sku = {v[0]: k for k, v in _serv_map.items()}
                         slot_opts = list(_serv_map.keys()) + prod_opts
                         pecas_atuais = g.get("pecas", [])
+                        # Um item já lançado continua selecionável após sair do catálogo.
+                        for part in pecas_atuais:
+                            sku = str(part.get("sku", "")).strip()
+                            if sku and sku not in _serv_por_sku and not any(_sku_de(o) == sku for o in slot_opts):
+                                slot_opts.append(f"{sku} — {part.get('nome') or sku}")
                         pecas_novas = []
                         for slot in range(3):
                             pc1, pc2, pc3 = st.columns([3, 1, 1])
@@ -2215,7 +2532,7 @@ def page_garantias(products_df, df_clients):
                                     _custo_ini = float(atual.get("custo", 0) or 0)
                                 else:
                                     # casamento por SKU EXATO (prefixo colidiria em códigos parecidos)
-                                    atual_opt = next((o for o in prod_opts if _sku_de(o) == _sku_alvo), None)
+                                    atual_opt = next((o for o in slot_opts if _sku_de(o) == _sku_alvo), None)
                             psel = pc1.selectbox(f"Peça/serviço {slot+1}", slot_opts,
                                                  index=slot_opts.index(atual_opt) if atual_opt else None,
                                                  placeholder="—", key=f"p{slot}_{tk}_{g['id']}")
@@ -2235,7 +2552,9 @@ def page_garantias(products_df, df_clients):
                                 pecas_novas.append({"sku": psku,
                                                     "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
                                                     "qtd": int(pqtd),
-                                                    "custo": custo_map.get(psku, 0)})
+                                                    "custo": atual.get("custo") if atual and
+                                                        str(atual.get("sku", "")).strip() == psku and atual.get("custo") is not None
+                                                        else custo_map.get(psku, 0)})
                         c3, c4 = st.columns(2)
                         resultado = c3.selectbox("Resultado", RESULTADOS_GARANTIA,
                                                  index=RESULTADOS_GARANTIA.index(g["resultado"])
@@ -2253,8 +2572,21 @@ def page_garantias(products_df, df_clients):
                         frete_obs = st.text_input("Sem frete? Explique (retirada pessoal, cliente pagou...)",
                                                   value=g.get("frete_obs", ""), key=f"fo_{tk}_{g['id']}")
                         salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
+                    troca_custo, troca_estimada = 0.0, False
+                    if resultado == "Trocada por produto novo":
+                        if g.get("resultado") == resultado:
+                            troca_custo, troca_estimada = _garantia_custo_troca(g, custo_map)
+                        else:
+                            # Primeira troca: fixa a referência vigente nesta gravação.
+                            troca_custo, troca_estimada = _garantia_custo_troca(
+                                {"produto_sku": g.get("produto_sku"), "custo_produto_trocado":
+                                 custo_map.get(str(g.get("produto_sku", "")).strip())}, custo_map)
+                        if troca_estimada:
+                            st.warning("Custo do produto trocado estimado pela referência atual; o valor original não pôde ser recuperado. Sem referência de custo, o total pode estar incompleto.")
                     if salvar:
                         problemas = []
+                        if data_chegada and data_envio and data_envio < data_chegada:
+                            problemas.append("a DATA DE ENVIO igual ou posterior à chegada")
                         # a partir de Aguardando peça já houve trabalho na máquina:
                         # não se salva sem contar O QUE FOI FEITO
                         if novo_status in ("Aguardando peça", "Confirmado — aguardando R$ frete",
@@ -2282,20 +2614,22 @@ def page_garantias(products_df, df_clients):
                                    "data_envio": data_envio.strftime("%Y-%m-%d") if data_envio else "",
                                    "frete_vinda": float(frete_vinda), "frete_volta": float(frete_volta),
                                    "frete_obs": frete_obs.strip()}
+                            upd["custo_produto_trocado"] = troca_custo
+                            upd["custo_produto_trocado_estimado"] = troca_estimada
                             upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
                             # trabalho termina no Confirmado (a Concluída pode vir semanas depois, só pelo frete)
                             if novo_status in ("Confirmado — aguardando R$ frete", "Concluída") \
                                     and not g.get("concluido_em"):
                                 upd["concluido_em"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                             _acao = f"Status → {novo_status}"
-                            if _fechada:
-                                _acao = f"CORREÇÃO PÓS-FECHAMENTO (era {g.get('status')}): {_acao}"
-                            if update_garantia(g["id"], upd, _acao):
+                            if update_garantia(g["id"], upd, _acao, expected_version=snapshot):
+                                st.session_state.pop(snapshot_key, None)
                                 st.success(f"✅ {g['id']} atualizada (custo do caso: "
                                            f"{fmt_brl_full(upd['custo_total'])}).")
                                 st.rerun()
                             else:
-                                st.error("Não consegui salvar no GitHub agora. Tente de novo em instantes.")
+                                st.error(st.session_state.pop("_gar_save_error", None) or
+                                         "Não consegui salvar no GitHub agora. Tente de novo em instantes.")
                     if g.get("historico"):
                         st.caption(" ➤ " + " | ".join(f"{h['em']} {h['por']}: {h['acao']}"
                                                       for h in g["historico"][-4:]))
@@ -2314,7 +2648,8 @@ def page_garantias(products_df, df_clients):
                                     f"🗑️ {g['id']} excluída definitivamente."
                                 st.rerun()
                             else:
-                                st.error("Não consegui excluir no GitHub agora. Tente de novo.")
+                                st.error(st.session_state.pop("_gar_save_error", None) or
+                                         "Não consegui excluir no GitHub agora. Tente de novo.")
 
         # Cancelada = exclusão lógica: só master/admin/diretor enxergam.
         # Para Marcos/Pedro não há sub-aba Canceladas e 'Todas' as omite.
@@ -2365,14 +2700,14 @@ def _mv_num(v, dflt=0.0):
     try:
         v = float(v)
         return v if math.isfinite(v) else dflt
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return dflt
 
 
 def _mv_int(v, dflt=0):
     try:
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return dflt
 
 
@@ -2439,10 +2774,12 @@ def page_mes_vivo():
         return
     total = mv["total"]
     ant = mv.get("anterior") if isinstance(mv.get("anterior"), dict) else {}
-    vendedores = [v for v in (mv.get("vendedores") or []) if isinstance(v, dict)]
-    por_dia = [x for x in (mv.get("por_dia") or [])
-               if isinstance(x, dict) and x.get("d")]
-    top = [c for c in (mv.get("top_clientes") or []) if isinstance(c, dict)]
+    def _records(field):
+        value = mv.get(field)
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    vendedores = _records("vendedores")
+    por_dia = [x for x in _records("por_dia") if x.get("d")]
+    top = _records("top_clientes")
     dia = max(_mv_int(mv.get("dia"), 1), 1)
     dias_mes = max(_mv_int(mv.get("dias_no_mes"), 30), 1)
     mes_curto = str(mv.get("mes_nome", "")).split("/")[0]
@@ -3404,6 +3741,9 @@ def page_agenda(df, months, df_sku=None):
         st.info('Nenhum cliente ativo nesta carteira. Confira o cadastro e os filtros.')
         return
     work['id'] = work['id'].astype(str).str.strip()
+    if work['id'].duplicated().any():
+        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
+        return
     work['valor_anual'] = work['monthly'].apply(annual_value_estimate)
     items = agenda.build_agenda(work.to_dict('records'), state, today) if state is not None else []
     counts = {category: sum(item['category'] == category for item in items)
@@ -3448,9 +3788,6 @@ def page_agenda(df, months, df_sku=None):
                         st.session_state['agenda_client'] = item['cid']
                         st.session_state['_ficha_selected_client'] = item['cid']
 
-    if work['id'].duplicated().any():
-        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
-        return
     clients = work.set_index('id', drop=False)
     ids = sorted(clients.index, key=lambda cid: (str(clients.loc[cid, 'name']), cid))
     current_client = st.session_state.get('_ficha_selected_client')
@@ -3492,6 +3829,9 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
         filtered = filtered[filtered['state'] == sel_state]
     if sel_status != "Todos":
         filtered = filtered[filtered['status'] == sel_status]
+    if filtered.empty:
+        st.info('Nenhum cliente encontrado com essa combinação de filtros.')
+        return
 
     # Helper: sum monthly values in selected period (uses sel_indices set)
     def period_sum(m):
@@ -3505,10 +3845,12 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
     period_rev = filtered['monthly'].apply(period_sum).sum()
     # status EFETIVO: inativado pelo app conta como Inativo, mesmo que a planilha
     # ainda diga Ativo (a planilha envelhece entre uploads; o app é a verdade)
-    _inat_app = filtered['id'].astype(str).str.strip().isin(load_inactive_clients())
-    n_active = len(filtered[(filtered['status'] == 'Ativo') & ~_inat_app])
+    _inactive_ids = load_inactive_clients()
+    _inat_app = filtered['id'].astype(str).str.strip().isin({str(cid).strip() for cid in _inactive_ids})
+    _active_mask = _commercial_active_mask(filtered, _inactive_ids)
+    n_active = int(_active_mask.sum())
     n_inactive = len(filtered[(filtered['status'] == 'Inativo') | _inat_app])
-    n_risk = len(filtered[filtered['risk'].isin(['Recuperação', 'Atenção']) & ~_inat_app])
+    n_risk = len(filtered[filtered['risk'].isin(['Recuperação', 'Atenção']) & _active_mask])
 
     # Buyers in period = clients with any revenue > 0 in selected months
     period_buyers = len(filtered[filtered['monthly'].apply(
@@ -3836,7 +4178,7 @@ def page_overview(df, months, year_ranges, sel_indices, sel_indices_sorted, sel_
     insights = []
 
     # Insight: Churn risk
-    at_risk = filtered[filtered['risk'] == 'Recuperação']
+    at_risk = filtered[filtered['risk'].eq('Recuperação') & _active_mask]
     if len(at_risk) > 0:
         lost = at_risk['monthly'].apply(annual_value_estimate).sum()
         insights.append(insight_html('danger', 'RISCO DE CHURN',
@@ -3921,6 +4263,9 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
     search = st.text_input('Buscar cliente (nome, estado, código ou vendedor)', key='client_search')
     filtered = scoped.copy()
     filtered['id'] = filtered['id'].astype(str).str.strip()
+    if filtered['id'].duplicated().any():
+        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
+        return
     if search.strip():
         term = search.strip()
         matches = pd.Series(False, index=filtered.index)
@@ -3929,9 +4274,6 @@ def page_clients(df, df_sku, months, year_ranges, sel_indices_sorted, sel_months
         filtered = filtered[matches].copy()
     if filtered.empty:
         st.info('Nenhum cliente encontrado na sua carteira com esse filtro.')
-        return
-    if filtered['id'].duplicated().any():
-        st.error('Há códigos de cliente duplicados na base. Corrija a origem para abrir a ficha com segurança.')
         return
     inactive_ids = load_inactive_clients()
     filtered['_active'] = _commercial_active_mask(filtered, inactive_ids)
@@ -3988,12 +4330,26 @@ def page_mix(df, products_df, df_client_products, df_sku, months, sel_indices_so
 
     period_label = f"{sel_months[0]} - {sel_months[-1]}" if len(sel_months) > 1 else (sel_months[0] if sel_months else "")
 
-    selected = st.selectbox("Selecione um cliente:", active_clients['name'].tolist(), key="mix_client")
-    if not selected:
+    if active_clients.empty:
+        st.info('Nenhum cliente ativo na carteira selecionada.')
+        return
+    active_clients['id'] = active_clients['id'].astype(str).str.strip()
+    if active_clients['id'].duplicated().any():
+        st.error('Há códigos de cliente duplicados na carteira. Corrija a origem antes de consultar o mix.')
+        return
+    clients = active_clients.set_index('id', drop=False)
+    client_ids = clients.index.tolist()
+    selected = st.selectbox("Selecione um cliente:", client_ids,
+        format_func=lambda cid: f"{clients.loc[cid, 'name']} · {cid} · {clients.loc[cid, 'state']}", key="mix_client")
+    if selected not in client_ids:
         return
 
-    c = df[df['name'] == selected].iloc[0]
-    client_id = str(c['id']).strip()
+    if products_df.empty or not {'code', 'name', 'abc', 'total_qty'}.issubset(products_df.columns):
+        st.info('Catálogo de produtos indisponível. Atualize a base para consultar oportunidades de mix.')
+        return
+
+    c = clients.loc[selected]
+    client_id = selected
     total = _period_sum(c['monthly'])
     months_active = sum(1 for i in sel_indices_sorted if i < len(c['monthly']) and c['monthly'][i] > 0)
     avg = total / months_active if months_active > 0 else 0
@@ -4197,10 +4553,16 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
         # Multiselect to choose clients to inactivate
         _is_full = can_approve_inactivations()
-        client_names = data['name'].tolist()
+        data['_cid'] = data['id'].astype(str).str.strip()
+        if data['_cid'].duplicated().any():
+            st.error('Há códigos de cliente duplicados na carteira. Corrija a origem antes de inativar.')
+            return
+        client_labels = {row['_cid']: f"{row['name']} · {row['_cid']} · {row['state']}"
+                         for _, row in data.iterrows()}
         selected_to_inactivate = st.multiselect(
             "Selecione clientes para INATIVAR:" if _is_full else "Selecione clientes para SOLICITAR inativação:",
-            options=client_names,
+            options=list(client_labels),
+            format_func=lambda cid: client_labels.get(cid, cid),
             key=f"inactivate_{tab_key}",
             help="Clientes inativados saem das listas de churn e ações" if _is_full
                  else "A solicitação vai para aprovação do administrador"
@@ -4208,10 +4570,10 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 
         if selected_to_inactivate:
             _clientes = []
-            for name in selected_to_inactivate:
-                match = data[data['name'] == name]
-                if len(match) > 0:
-                    _clientes.append({'cid': str(match.iloc[0]['id']).strip(), 'name': name,
+            for cid in selected_to_inactivate:
+                match = data[data['_cid'] == cid]
+                if len(match) == 1:
+                    _clientes.append({'cid': cid, 'name': match.iloc[0]['name'],
                                       'vendor': match.iloc[0].get('vendor', '')})
             _inativacao_form(_clientes, f"churn_{tab_key}")
 
@@ -4307,6 +4669,9 @@ def page_churn(df, months, sel_indices_sorted, sel_months):
 # PAGE: PRODUTOS
 # ============================================================
 def page_products(products_df, df_sku):
+    if products_df.empty or not {'code', 'name', 'category', 'abc', 'total_qty'}.issubset(products_df.columns):
+        st.info('Catálogo de produtos indisponível. Atualize a base para consultar os produtos.')
+        return
     st.header("📦 Análise de Produtos")
 
     is_admin = has_full_data_access()
@@ -4392,9 +4757,9 @@ def page_products(products_df, df_sku):
     if search:
         s = search.lower()
         display = display[
-            display['name'].str.lower().str.contains(s, na=False) |
-            display['code'].str.lower().str.contains(s, na=False) |
-            display['category'].str.lower().str.contains(s, na=False)
+            display['name'].astype(str).str.lower().str.contains(s, na=False, regex=False) |
+            display['code'].astype(str).str.lower().str.contains(s, na=False, regex=False) |
+            display['category'].astype(str).str.lower().str.contains(s, na=False, regex=False)
         ]
 
     if is_admin:
@@ -4493,9 +4858,8 @@ def page_admin(vendor_options=None):
                     "role": new_role,
                     "vendor_filter": new_vendor if new_role == 'vendedor' else None
                 }
-                save_users(users)
-                st.success(f"Usuário '{new_username}' criado com sucesso!")
-                st.rerun()
+                if _save_users_from_admin(users, f"Usuário '{new_username}' criado com sucesso!"):
+                    st.rerun()
 
     vendor_users = [username for username, info in users['users'].items() if info.get('role') == 'vendedor']
     if vendor_users:
@@ -4512,9 +4876,8 @@ def page_admin(vendor_options=None):
                     st.error(error)
                 else:
                     users['users'][wallet_user]['vendor_filter'] = wallet_vendor
-                    save_users(users)
-                    st.success(f"Carteira de '{wallet_user}' ajustada.")
-                    st.rerun()
+                    if _save_users_from_admin(users, f"Carteira de '{wallet_user}' ajustada."):
+                        st.rerun()
 
     st.divider()
 
@@ -4528,8 +4891,7 @@ def page_admin(vendor_options=None):
                 st.error("Use uma senha com pelo menos 12 caracteres.")
             else:
                 users["users"][pwd_user]["password"] = hash_password(new_pwd)
-                save_users(users)
-                st.success(f"Senha de '{pwd_user}' alterada!")
+                _save_users_from_admin(users, f"Senha de '{pwd_user}' alterada!")
 
     st.divider()
 
@@ -4565,14 +4927,7 @@ def page_admin(vendor_options=None):
         st.warning("⚠️ GITHUB_TOKEN não configurado nos secrets do Streamlit Cloud. "
                    "O upload vale só até o próximo reinício do servidor — para tornar permanente, "
                    "salve a planilha na pasta do projeto e rode o deploy.bat, ou configure o token (ver COMO-USAR.md).")
-    uploaded = st.file_uploader("Envie a planilha atualizada (.xlsx)", type=['xlsx'])
-    if uploaded:
-        pushed = _handle_planilha_upload(uploaded)
-        if pushed:
-            st.success("Planilha atualizada e salva no GitHub! O app pode reiniciar em ~1 min para aplicar — os dados ficam permanentes.")
-        else:
-            st.success("Planilha atualizada nesta sessão! (Sem token GitHub: será perdida no próximo reinício.)")
-        st.rerun()
+    _render_planilha_upload("Envie a planilha atualizada (.xlsx)", 'admin_planilha_upload')
 
     st.divider()
 
@@ -4675,18 +5030,11 @@ def main():
 
     # Load data
     result = load_data()
-    if result[0] is None or len(result) < 6:
+    if not result or len(result) < 6 or result[0] is None or result[0].empty or not result[3]:
         st.warning("Não foi possível carregar os dados. Verifique se o arquivo Excel está na pasta do app.")
         if st.session_state.get("role") == "admin":
             st.subheader("Upload da planilha")
-            uploaded = st.file_uploader("Envie a planilha (.xlsx)", type=['xlsx'])
-            if uploaded:
-                pushed = _handle_planilha_upload(uploaded)
-                if pushed:
-                    st.success("Planilha salva no GitHub! Recarregando...")
-                else:
-                    st.success("Planilha salva nesta sessão! Recarregando...")
-                st.rerun()
+            _render_planilha_upload("Envie a planilha (.xlsx)", 'recovery_planilha_upload')
         return
 
     df_clients, df_products, df_client_products, months, year_ranges, df_sku = result
@@ -4697,6 +5045,9 @@ def main():
                                          st.session_state.get('vendor_filter'))
     except ValueError as error:
         _show_access_denied(str(error))
+        if st.session_state.get('role') == 'admin':
+            st.subheader('Corrigir a base de clientes')
+            _render_planilha_upload('Envie a planilha corrigida (.xlsx)', 'identity_recovery_upload')
         return
 
     # --- Parse unique years and month names from labels (e.g. "jan/21") ---

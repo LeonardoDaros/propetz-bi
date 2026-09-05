@@ -24,12 +24,13 @@ APP = Path(__file__).with_name("app.py")
 TREE = ast.parse(APP.read_text(encoding="utf-8-sig"), filename=str(APP))
 FUNCTIONS = {
     "can_edit_garantia_fechada", "_garantias_visiveis", "_garantia_data",
+    "_garantia_status", "_garantia_versao",
     "_garantia_tempo_info", "_garantia_tempo_rotulo", "_garantia_periodo_vendas",
     "_garantias_no_periodo_vendas", "_garantia_relacao_vendas",
-    "_garantia_custo_total", "_rotulo_outro", "_link_rastreio", "page_garantias",
+    "_garantia_custo_total", "_garantia_custo_troca", "_rotulo_outro", "_link_rastreio", "page_garantias",
 }
 CONSTANTS = {
-    "STATUS_GARANTIA", "STATUS_ATIVOS", "STATUS_FINALIZADOS", "CANAIS_GARANTIA",
+    "STATUS_GARANTIA", "STATUS_ATIVOS", "STATUS_FINALIZADOS", "CANAIS_GARANTIA", "_STATUS_LEGADO",
     "EMPRESAS_NF", "DEFEITOS_GARANTIA", "CAUSAS_GARANTIA", "PRIORIDADES_GARANTIA",
     "_PRIO_ICONE", "RESULTADOS_GARANTIA",
 }

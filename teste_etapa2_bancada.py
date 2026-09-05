@@ -103,7 +103,9 @@ import streamlit as st
 from teste_etapa1_garantias import NS, META
 st.session_state.setdefault('role', 'garantia')
 
-def atualizar(gid, updates, acao):
+def atualizar(gid, updates, acao, *, expected_version=None):
+    current = next(g for g in st.session_state['_cases'] if g['id'] == gid)
+    assert expected_version == NS['_garantia_versao'](current)
     st.session_state.setdefault('_updates', []).append((gid, copy.deepcopy(updates)))
     for registro in st.session_state['_cases']:
         if registro['id'] == gid:

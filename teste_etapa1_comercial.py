@@ -233,7 +233,7 @@ class CommercialRegression(unittest.TestCase):
         empty = pd.DataFrame()
         self.ns['page_mix'](self.df, empty, empty, empty, MONTHS, list(range(12)), MONTHS)
         self.assertEqual(set(self.ui.options['mix_client']),
-                         {'Cliente sintético 1', 'Cliente sintético 2', 'Cliente sintético 3'})
+                         {'1', '2', '3'})
 
     def render_recurrence(self, monthly, selected):
         # A ficha agora tem uma janela própria. Esta regressão cobre o helper

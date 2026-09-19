@@ -21,6 +21,8 @@ import agenda_comercial as agenda
 import ui_propetz as ui
 import painel_garantias
 import ficha_cliente_ui
+import pedidos_comerciais
+import pedidos_comerciais_ui
 from exportacao_csv import csv_excel_bytes
 from collections import defaultdict
 from datetime import datetime, timedelta, date
@@ -942,6 +944,34 @@ def load_silver_mes_vivo():
     (silver_mes_vivo.py). Sem arquivo/token → {} e a página avisa, sem quebrar."""
     data = _read_state_json("silver_mes_vivo.json", SILVER_MES_VIVO_FILE, {})
     return data if isinstance(data, dict) else {}
+
+
+def load_silver_pedidos_distribuicao():
+    """Fonte separada; ausência/falha nunca vira carteira zerada."""
+    filename = 'silver_pedidos_distribuicao.json'
+    data = _read_state_json(filename, os.path.join(os.path.dirname(__file__), filename), None)
+    return pedidos_comerciais.validate_snapshot(data)
+
+
+def _pedidos_comerciais_view(clients, *, vendor_filter=None):
+    """Todo componente recebe o mesmo recorte autorizado, inclusive métricas."""
+    if (not st.session_state.get('authenticated') or _session_expired()
+            or st.session_state.get('role') not in ('admin', 'diretor', 'vendedor')):
+        return None
+    role = st.session_state.get('role')
+    vendor = st.session_state.get('vendor_filter') if role == 'vendedor' else vendor_filter
+    try:
+        return pedidos_comerciais.scope_snapshot(load_silver_pedidos_distribuicao(),
+            clients.to_dict('records'), role, vendor, _agenda_now().date(), now=_agenda_now())
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _open_pedido_client(cid, allowed_ids):
+    """Navegação somente a um cliente presente no recorte ativo da página."""
+    if cid in allowed_ids:
+        st.session_state['agenda_client'] = cid
+        st.session_state['_ficha_selected_client'] = cid
 
 from util_comum import parse_label_ym as _parse_label_ym  # reuso (regra global nº 6)
 
@@ -3691,6 +3721,23 @@ def _render_client_dossier(client, df_sku, months, state, *, active=True):
             active=active, history_available=state is not None,
             on_suggest=lambda action: _agenda_apply_suggestion(cid, action),
             render_history=_render_agenda_history)
+        # A ficha pode ser consultada por um gestor; filtrar a fonte antes de
+        # escopar evita mostrar pendências de outros clientes nesta seção.
+        if active:
+            try:
+                source = load_silver_pedidos_distribuicao()
+                if not isinstance(source, dict):
+                    raise ValueError('Fonte de pedidos indisponível.')
+                source = {**source, 'pedidos': [p for p in source['pedidos'] if p['cliente_id'] == cid]}
+                orders_view = pedidos_comerciais.scope_snapshot(source, [dict(client)],
+                    st.session_state.get('role'),
+                    st.session_state.get('vendor_filter') if st.session_state.get('role') == 'vendedor' else None,
+                    _agenda_now().date(), now=_agenda_now())
+            except (ValueError, TypeError, OSError):
+                orders_view = None
+            pedidos_comerciais_ui.render_pedidos(orders_view, key_prefix='ficha_pedidos_' + cid,
+                compact=True, on_suggest=(lambda action: _agenda_apply_suggestion(cid, action))
+                if state is not None else None)
     if contact is not None:
         with contact, st.container(border=True):
             if state is None:
@@ -3732,11 +3779,13 @@ def page_agenda(df, months, df_sku=None):
     if '_agenda_notice' in st.session_state:
         st.success(st.session_state.pop('_agenda_notice'))
     work = scoped[_commercial_active_mask(scoped, load_inactive_clients())].copy()
+    orders_vendor = None
     if has_full_data_access():
         options = ['Todas as carteiras'] + _vendor_options(work)
         vendor = st.selectbox('Acompanhar carteira', options, key='agenda_vendor')
         if vendor != options[0]:
             work = work[work['vendor'].astype(str).str.strip() == vendor].copy()
+            orders_vendor = vendor
     if work.empty:
         st.info('Nenhum cliente ativo nesta carteira. Confira o cadastro e os filtros.')
         return
@@ -3787,6 +3836,11 @@ def page_agenda(df, months, df_sku=None):
                     if st.button('Abrir cliente →', key=f"agenda_open_{item['cid']}", use_container_width=True):
                         st.session_state['agenda_client'] = item['cid']
                         st.session_state['_ficha_selected_client'] = item['cid']
+
+    orders_view = _pedidos_comerciais_view(work, vendor_filter=orders_vendor)
+    allowed_ids = set(work['id'])
+    pedidos_comerciais_ui.render_pedidos(orders_view, key_prefix='agenda_pedidos',
+        on_open_client=lambda cid: _open_pedido_client(cid, allowed_ids))
 
     clients = work.set_index('id', drop=False)
     ids = sorted(clients.index, key=lambda cid: (str(clients.loc[cid, 'name']), cid))

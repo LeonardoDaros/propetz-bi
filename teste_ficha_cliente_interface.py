@@ -90,6 +90,9 @@ ns['_SESSION_MAX'] = 43200
 ns['_gh_token'] = lambda: None
 ns['_agenda_now'] = lambda: datetime.fromisoformat({NOW.isoformat()!r})
 ns['load_inactive_clients'] = lambda: set(control.get('inactive', ['004']))
+def pedidos_indisponiveis():
+    raise ValueError('Fonte de pedidos não configurada nesta fixture.')
+ns['load_silver_pedidos_distribuicao'] = pedidos_indisponiveis
 ns['load_data'] = lambda: (clients, pd.DataFrame(), pd.DataFrame(), months, {{}}, products)
 ns['load_users'] = lambda: {{'users': {{'pessoa_ficticia': {{'name': 'Pessoa Fictícia',
     'role': control.get('saved_role', 'vendedor'), 'vendor_filter': control.get('saved_vendor', 'Carteira A')}}}}}}

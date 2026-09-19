@@ -41,6 +41,7 @@ else:
     import app
 app.AGENDA_FILE = {str(Path(folder) / 'agenda.json')!r}
 app._gh_token = lambda: None
+app.load_silver_pedidos_distribuicao = lambda: None
 app._agenda_now = lambda: datetime.fromisoformat('2026-09-04T10:00:00-03:00')
 app.load_inactive_clients = lambda: {{'004'}}
 app.load_users = lambda: {{'users':{{'pessoa_teste':{{'name':'Pessoa de Teste', 'role':'vendedor','vendor_filter':'Carteira A'}}}}}}

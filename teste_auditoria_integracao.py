@@ -45,6 +45,7 @@ app.load_garantias = lambda: []
 app._load_access_log = lambda: []
 app.load_silver_distribuicao = lambda: {{}}
 app.load_silver_mes_vivo = lambda: {{}}
+app.load_silver_pedidos_distribuicao = lambda: None
 app.load_abc_valor = lambda: None
 app.load_users = lambda: {{'users':{{'pessoa_auditoria':{{'name':'Pessoa Fictícia','role':control['role'],'vendor_filter':'Carteira A','password':'synthetic-not-for-login'}}}}}}
 app.load_data = lambda: (clients, products, cp, months, {{}}, sku)

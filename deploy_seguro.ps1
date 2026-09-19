@@ -38,6 +38,10 @@ try {
     $script:DeployFiles = @(
         'app.py', 'util_comum.py', 'agenda_comercial.py', 'ui_propetz.py',
         'ficha_cliente_dados.py', 'ficha_cliente_ui.py',
+        'pedidos_comerciais.py', 'pedidos_comerciais_ui.py',
+        'silver_pedidos_distribuicao.py', 'silver_diaria.py',
+        'teste_pedidos_comerciais.py', 'teste_pedidos_comerciais_ui.py',
+        'teste_silver_pedidos_distribuicao.py', 'teste_pedidos_integracao.py',
         'teste_ficha_cliente_dados.py', 'teste_ficha_cliente_interface.py',
         'teste_auditoria_comercial.py', 'teste_auditoria_garantias.py',
         'teste_auditoria_integracao.py', 'teste_auditoria_seguranca.py',

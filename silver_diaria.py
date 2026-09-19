@@ -21,6 +21,7 @@ PY = sys.executable
 LOG = os.path.join(BASE, "silver_diaria.log")
 JSON_APP = os.path.join(BASE, "silver_distribuicao.json")
 JSON_MV = os.path.join(BASE, "silver_mes_vivo.json")
+JSON_PEDIDOS = os.path.join(BASE, "silver_pedidos_distribuicao.json")
 # pasta de clone ÚNICA por execução (instâncias simultâneas não colidem);
 # órfãs de execuções antigas são varridas no início, melhor esforço
 CLONE_PREFIXO = os.path.join(os.environ.get("TEMP", "."), "_propetz_state_push")
@@ -120,6 +121,18 @@ def main():
         log(f"mes-vivo FALHOU (rc={rc_mv}) — publico só o churn nesta rodada: "
             f"{out_mv.strip().splitlines()[-1][:160] if out_mv.strip() else '?'}")
 
+    # 1c. carteira comercial independente. Falha não interfere em churn/Mês
+    # ao Vivo e não troca a data da última carga boa por uma data artificial.
+    try:
+        rc_pedidos, out_pedidos = run([PY, os.path.join(BASE, "silver_pedidos_distribuicao.py")],
+                                     cwd=BASE, timeout=240)
+    except Exception as error:
+        rc_pedidos, out_pedidos = 1, type(error).__name__
+    if rc_pedidos == 0:
+        log("  pedidos: snapshot coletado; preparado para publicação.")
+    else:
+        log("pedidos FALHOU — snapshot remoto anterior preservado; confira a carga local.")
+
     # 2. publica no branch state (clone raso -> copia -> commit -> push c/ rebase)
     rc, remote = run(["git", "-C", BASE, "remote", "get-url", "origin"])
     remote = remote.strip()
@@ -139,6 +152,9 @@ def main():
     if rc_mv == 0 and os.path.exists(JSON_MV):
         shutil.copy2(JSON_MV, os.path.join(CLONE, "silver_mes_vivo.json"))
         arquivos.append("silver_mes_vivo.json")
+    if rc_pedidos == 0 and os.path.exists(JSON_PEDIDOS):
+        shutil.copy2(JSON_PEDIDOS, os.path.join(CLONE, "silver_pedidos_distribuicao.json"))
+        arquivos.append("silver_pedidos_distribuicao.json")
     rc, out = run(["git", "-C", CLONE, "add", *arquivos])
     if rc != 0:
         log(f"FALHA no git add (rc={rc}): {out.strip()[:200]}")

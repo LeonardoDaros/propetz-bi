@@ -22,6 +22,7 @@ LOG = os.path.join(BASE, "silver_diaria.log")
 JSON_APP = os.path.join(BASE, "silver_distribuicao.json")
 JSON_MV = os.path.join(BASE, "silver_mes_vivo.json")
 JSON_PEDIDOS = os.path.join(BASE, "silver_pedidos_distribuicao.json")
+JSON_CATALOGO = os.path.join(BASE, "silver_catalogo_garantias.json")
 # pasta de clone ÚNICA por execução (instâncias simultâneas não colidem);
 # órfãs de execuções antigas são varridas no início, melhor esforço
 CLONE_PREFIXO = os.path.join(os.environ.get("TEMP", "."), "_propetz_state_push")
@@ -133,6 +134,18 @@ def main():
     else:
         log("pedidos FALHOU — snapshot remoto anterior preservado; confira a carga local.")
 
+    # 1d. cadastro completo da garantia, sem depender de histórico de vendas.
+    # Só uma coleta concluída pode substituir a última publicação válida.
+    try:
+        rc_catalogo, _ = run([PY, os.path.join(BASE, "silver_catalogo_garantias.py")],
+                             cwd=BASE, timeout=120)
+    except Exception:
+        rc_catalogo = 1
+    if rc_catalogo == 0:
+        log("  catalogo-garantias: snapshot coletado; preparado para publicação.")
+    else:
+        log("catalogo-garantias FALHOU — catálogo remoto anterior preservado.")
+
     # 2. publica no branch state (clone raso -> copia -> commit -> push c/ rebase)
     rc, remote = run(["git", "-C", BASE, "remote", "get-url", "origin"])
     remote = remote.strip()
@@ -155,6 +168,9 @@ def main():
     if rc_pedidos == 0 and os.path.exists(JSON_PEDIDOS):
         shutil.copy2(JSON_PEDIDOS, os.path.join(CLONE, "silver_pedidos_distribuicao.json"))
         arquivos.append("silver_pedidos_distribuicao.json")
+    if rc_catalogo == 0 and os.path.exists(JSON_CATALOGO):
+        shutil.copy2(JSON_CATALOGO, os.path.join(CLONE, "silver_catalogo_garantias.json"))
+        arquivos.append("silver_catalogo_garantias.json")
     rc, out = run(["git", "-C", CLONE, "add", *arquivos])
     if rc != 0:
         log(f"FALHA no git add (rc={rc}): {out.strip()[:200]}")

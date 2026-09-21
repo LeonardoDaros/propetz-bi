@@ -42,6 +42,7 @@ app.log_page_view = lambda *a, **kw: None
 app.load_inactive_clients = lambda: {{'004'}}
 app.load_inactive_requests = lambda: []
 app.load_garantias = lambda: []
+app.load_catalogo_garantias = lambda: None
 app._load_access_log = lambda: []
 app.load_silver_distribuicao = lambda: {{}}
 app.load_silver_mes_vivo = lambda: {{}}

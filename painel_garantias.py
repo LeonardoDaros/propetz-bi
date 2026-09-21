@@ -282,6 +282,8 @@ def _operations(frame, records):
     else:
         _bars(costs.index, costs.values, ROSE, money=True)
     st.caption("Soma do custo total salvo em cada caso. Não recalcula peças ou trocas com preços atuais. "
+               "Novos lançamentos usam a referência consolidada de Matriz, Filial e TradeCorp no Silver; "
+               "quando ela está indisponível, a origem alternativa fica registrada. "
                "Não representa despesa realizada no mês; faltam datas de cada lançamento para essa leitura.")
     st.subheader("Peças e serviços lançados")
     items = []
@@ -301,16 +303,20 @@ def _operations(frame, records):
                     continue
             if not math.isfinite(qty) or qty <= 0:
                 continue
+            known_cost = math.isfinite(cost) and cost >= 0 and not part.get("custo_pendente")
             items.append({"Peça / serviço": str(part.get("sku") or "Sem SKU") + " · " + str(part.get("nome") or "Sem nome"),
-                          "Quantidade": qty, "Custo lançado": qty * cost if math.isfinite(cost) and cost >= 0 else float("nan")})
+                          "Quantidade": qty, "Custo lançado": qty * cost if known_cost else float("nan"),
+                          "Lançamentos sem custo": 0 if known_cost else 1})
     if items:
         parts = pd.DataFrame(items).groupby("Peça / serviço", as_index=False).agg(
-            Quantidade=("Quantidade", "sum"), **{"Custo lançado": ("Custo lançado", lambda s: s.sum(min_count=1))})
+            Quantidade=("Quantidade", "sum"), **{"Custo lançado": ("Custo lançado", lambda s: s.sum(min_count=1)),
+                                                 "Lançamentos sem custo": ("Lançamentos sem custo", "sum")})
         parts = parts.sort_values("Quantidade", ascending=False, kind="stable")
         parts["Custo lançado"] = parts["Custo lançado"].map(_brl)
         st.dataframe(parts, use_container_width=True, hide_index=True)
         st.caption("Itens registrados nos casos deste recorte, inclusive em andamento. "
-                   "Não é saldo de estoque nem lista de peças faltantes. Valores ausentes não usam preços atuais.")
+                   "Não é saldo de estoque nem lista de peças faltantes. Valores ausentes não usam preços atuais. "
+                   "Quando há lançamentos sem custo, o valor exibido é somente a parcela conhecida.")
     else:
         st.caption("Nenhuma peça ou serviço lançado nos casos selecionados.")
 
@@ -421,6 +427,11 @@ def _render_content(garantias, products_df, meta, *, role, tempo_info, periodo_v
         summary = ga.product_summary(selected)
         # O motor mantém os índices de entrada mesmo após excluir canceladas e aplicar filtros.
         selected_records = [records[i] for i in selected.index]
+        pending_costs = sum(bool(g.get("custo_pendente")) or any(
+            isinstance(p, dict) and (p.get("custo_pendente") or p.get("custo") is None)
+            for p in (g.get("pecas") if isinstance(g.get("pecas"), list) else [])) for g in selected_records)
+        if pending_costs:
+            st.warning(f"{pending_costs} casos têm custos de peças ou trocas pendentes. Totais ausentes não entram na soma de custos; os casos continuam nas contagens de atendimento. Totais já registrados no histórico são preservados.")
         estimated = sum(bool(g.get("custo_produto_trocado_estimado")) for g in selected_records)
         if estimated:
             st.caption(f"{estimated} casos incluem custo estimado do produto trocado; o histórico não permitiu recuperar o valor original.")
@@ -445,6 +456,7 @@ def _render_content(garantias, products_df, meta, *, role, tempo_info, periodo_v
             "encerrado": "Serviço encerrado", "pendente_frete": "Frete pendente", "ativo_tecnico": "Pendência técnica",
             "dias_empresa": "Dias desde chegada", "dias_resolucao": "Dias chegada até envio", "data_envio": "Data de envio", "prioridade": "Prioridade"})
         export["Custo troca estimado"] = [bool(records[i].get("custo_produto_trocado_estimado")) for i in export_frame.index]
+        export["Custo pendente"] = [bool(records[i].get("custo_pendente")) for i in export_frame.index]
         csv_download(export, export_label, "garantias_analise.csv", "gp_export")
 
 
@@ -479,10 +491,16 @@ def _export_historico(garantias, csv_download):
                          "Causa": g.get("diagnostico_causa"), "Serviço": g.get("diagnostico_obs"),
                          "Data chegada": g.get("data_chegada", ""), "Data envio": g.get("data_envio", ""),
                          "Peças": "; ".join(f"{p.get('qtd',1)}x {p.get('nome','')}" for p in parts),
+                         "Origem custo peças": "; ".join(f"{p.get('sku', '')}: {p.get('custo_origem') or 'histórico sem origem informada'}" for p in parts),
+                         "Referência custo peças": "; ".join(
+                             f"{p.get('sku', '')}: {p.get('custo_fonte', '')} | {p.get('custo_criterio', '')} | {p.get('custo_coletado_em', '')}"
+                             for p in parts if p.get("custo_fonte")),
                          "Frete vinda": g.get("frete_vinda", 0), "Frete volta": g.get("frete_volta", 0),
                          "Sem frete (justif.)": g.get("frete_obs", ""),
                          "Custo total": g.get("custo_total"), "Resultado": g.get("resultado"),
+                         "Custo pendente": bool(g.get("custo_pendente")),
                          "Custo produto trocado": g.get("custo_produto_trocado"),
+                         "Origem custo produto trocado": g.get("custo_produto_trocado_origem", ""),
                          "Custo troca estimado": bool(g.get("custo_produto_trocado_estimado")),
                          "Entrada": g.get("criado_em"), "Concluída": g.get("concluido_em", ""),
                          "Registrado por": g.get("criado_por")})

@@ -19,10 +19,13 @@ silver_distribuicao.json
 silver_mes_vivo.json
 silver_pedidos_distribuicao.json
 silver_pedidos_distribuicao.json.*.tmp
+silver_catalogo_garantias.json
+silver_catalogo_garantias.json.*.tmp
 silver_diaria.log
 DEPLOY.md
 .sessions/
 Novos valores*.xlsx
+Planilha Base Subir Tiny.xlsx
 
 CREDENCIAIS-LOCAL.md
 

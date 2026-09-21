@@ -17,6 +17,8 @@ from unittest.mock import patch
 import pandas as pd
 
 import painel_garantias
+import garantias_catalogo
+from zoneinfo import ZoneInfo
 from util_comum import parse_label_ym
 
 
@@ -40,7 +42,9 @@ NODES = [n for n in TREE.body if
                                           for t in n.targets))]
 NS = {"datetime": datetime, "date": date, "timedelta": timedelta,
       "math": math, "pd": pd, "defaultdict": defaultdict,
-      "_parse_label_ym": parse_label_ym, "painel_garantias": painel_garantias}
+      "_parse_label_ym": parse_label_ym, "painel_garantias": painel_garantias,
+      "garantias_catalogo": garantias_catalogo, "ZoneInfo": ZoneInfo,
+      "load_catalogo_garantias": lambda: None}
 exec(compile(ast.Module(body=NODES, type_ignores=[]), str(APP), "exec"), NS)
 
 

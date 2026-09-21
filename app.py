@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import agenda_comercial as agenda
 import ui_propetz as ui
 import painel_garantias
+import garantias_catalogo
 import ficha_cliente_ui
 import pedidos_comerciais
 import pedidos_comerciais_ui
@@ -953,6 +954,13 @@ def load_silver_pedidos_distribuicao():
     return pedidos_comerciais.validate_snapshot(data)
 
 
+def load_catalogo_garantias():
+    """Cadastro de produtos independente das vendas, publicado no state."""
+    filename = 'silver_catalogo_garantias.json'
+    data = _read_state_json(filename, os.path.join(os.path.dirname(__file__), filename), None)
+    return garantias_catalogo.validate_snapshot(data)
+
+
 def _pedidos_comerciais_view(clients, *, vendor_filter=None):
     """Todo componente recebe o mesmo recorte autorizado, inclusive métricas."""
     if (not st.session_state.get('authenticated') or _session_expired()
@@ -990,6 +998,8 @@ def _link_rastreio(cod):
 
 def _garantia_custo_troca(g, custo_map):
     """Snapshot da troca; recupera legado só quando o total tem decomposição conhecida."""
+    if g.get("custo_produto_trocado_pendente"):
+        return None, True
     def number(value):
         if isinstance(value, bool):
             raise ValueError("Booleano não é custo")
@@ -1024,24 +1034,34 @@ def _garantia_custo_troca(g, custo_map):
     try:
         return number(custo_map.get(str(g.get("produto_sku", "")).strip())), True
     except (TypeError, ValueError, OverflowError):
-        return 0.0, True
+        return None, True
 
 
 def _garantia_custo_total(g, custo_map):
-    """Custo real do caso: peças + fretes (vinda e volta) + extra + produto
-    inteiro se trocado por novo."""
+    """Soma os valores lançados; componente desconhecido deixa o total pendente.
+
+    O catálogo é consultado ao lançar a peça, nunca para reprecificar o histórico.
+    """
+    def number(value):
+        if isinstance(value, bool):
+            raise ValueError("Booleano não é custo")
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Custo inválido")
+        return value
+
     total = 0.0
-    for p in g.get("pecas", []):
-        c = p.get("custo")
-        if c is None:
-            c = custo_map.get(str(p.get("sku", "")).strip(), 0) or 0
-        total += (p.get("qtd", 1) or 1) * c
-    total += g.get("frete_vinda", 0) or 0
-    total += g.get("frete_volta", 0) or 0
-    total += g.get("custo_extra", 0) or 0   # legado (registros antigos)
-    if g.get("resultado") == "Trocada por produto novo":
-        total += _garantia_custo_troca(g, custo_map)[0]
-    return round(total, 2)
+    try:
+        for p in g.get("pecas", []):
+            if p.get("custo_pendente"):
+                return None
+            total += number(p.get("qtd", 1)) * number(p.get("custo"))
+        total += sum(number(g.get(k, 0) or 0) for k in ("frete_vinda", "frete_volta", "custo_extra"))
+        if g.get("resultado") == "Trocada por produto novo":
+            total += number(_garantia_custo_troca(g, custo_map)[0])
+        return round(total, 2) if math.isfinite(total) else None
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
 
 # ============================================================
 # PERSISTÊNCIA REMOTA (GitHub) — o disco do Streamlit Cloud é
@@ -2202,7 +2222,53 @@ def page_garantias(products_df, df_clients):
     custo_map = {str(k).strip(): v for k, v in (meta.get("custo_unitario") or {}).items()}
     vendas_map = {str(k).strip(): v for k, v in (meta.get("vendas_12m_todos_canais") or {}).items()}
 
-    prod_opts = [f"{r['code']} — {r['name']}" for _, r in products_df.iterrows()]
+    catalogo = load_catalogo_garantias()
+    _referencias_custo = {}
+
+    def _referencia_custo(sku):
+        """Referência para um novo lançamento; nunca altera o registro histórico."""
+        sku = str(sku or "").strip()
+        if sku not in _referencias_custo:
+            reference = garantias_catalogo.custo_referencia_consolidado(catalogo, sku)
+            if reference is not None:
+                reference = dict(reference, origem="silver_consolidado")
+                reference["coletado_em"] = catalogo.get("generated_at", "")
+            else:
+                amount = custo_map.get(sku)
+                try:
+                    if isinstance(amount, bool):
+                        raise ValueError("Custo inválido")
+                    amount = float(amount)
+                    if not math.isfinite(amount) or amount < 0:
+                        raise ValueError("Custo inválido")
+                    reference = {"custo": amount, "origem": "base_mae", "fonte": "Base Mãe / abc_valor.json",
+                                 "criterio": "referencia_legada_base_mae", "unidades": [],
+                                 "atualizado_em": meta.get("gerado_em", ""), "coletado_em": meta.get("gerado_em", "")}
+                except (TypeError, ValueError, OverflowError):
+                    reference = None
+            _referencias_custo[sku] = reference
+        return _referencias_custo[sku]
+
+    def _proveniencia_custo(reference):
+        return {"custo_origem": reference["origem"], "custo_fonte": reference.get("fonte", ""),
+                "custo_criterio": reference.get("criterio", ""), "custo_unidades": reference.get("unidades", []),
+                "custo_referencia_em": reference.get("atualizado_em", ""),
+                "custo_coletado_em": reference.get("coletado_em", "")}
+
+    def _rotulo_custo(reference):
+        if reference["origem"] == "silver_consolidado":
+            return "Silver consolidado · Matriz / Filial / TradeCorp"
+        return "Base Mãe · alternativa sem referência Silver atual"
+
+    prod_opts = garantias_catalogo.catalogo_opcoes(catalogo, products_df.to_dict('records'))
+    if catalogo:
+        coletado = datetime.fromisoformat(catalogo['generated_at']).astimezone(ZoneInfo('America/Sao_Paulo'))
+        st.caption(f"Catálogo de produtos e peças atualizado em {coletado:%d/%m/%Y às %H:%M}. "
+                   "Busque pelo nome ou SKU; as peças não precisam ter venda anterior para aparecer.")
+        if datetime.now(ZoneInfo('America/Sao_Paulo')) - coletado > timedelta(hours=24):
+            st.warning("O catálogo está há mais de 24 horas sem atualização. Peças cadastradas depois dessa carga podem não aparecer.")
+    else:
+        st.warning("Catálogo completo de peças indisponível. A lista provisória usa os produtos da base comercial e pode não conter peças novas.")
     cli_dist = sorted(df_clients['name'].unique().tolist()) if len(df_clients) else []
 
     def _sku_de(opt):
@@ -2434,6 +2500,8 @@ def page_garantias(products_df, df_clients):
                     if g.get("custo_produto_trocado_estimado"):
                         _linha_meta += " | **Custo da troca:** estimado; o histórico não permitiu recuperar o valor original."
                     st.markdown(_linha_meta)
+                    if g.get("custo_pendente") or (g.get("custo_total") is None and g.get("pecas")):
+                        st.warning("Custo incompleto: há valor de peça ou troca pendente. O atendimento técnico pode continuar; o caso fica fora da soma de custos até completar os valores.")
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
                                 f"— {g.get('defeito_obs') or 'sem obs.'}")
 
@@ -2461,7 +2529,7 @@ def page_garantias(products_df, df_clients):
                                     f"**Chegada:** {_fdt(g.get('data_chegada'))} | "
                                     f"**Envio:** {_fdt(g.get('data_envio'))}{_rast} | "
                                     f"**Fretes:** {_fretes} | "
-                                    f"**Custo do caso:** {fmt_brl_full(g.get('custo_total', 0) or 0)}")
+                                    f"**Custo do caso:** {fmt_brl_full(g['custo_total']) if g.get('custo_total') is not None else 'Pendente / incompleto'}")
                         if g.get("pecas"):
                             st.markdown("**Peças:** " + "; ".join(
                                 f"{p.get('qtd',1)}x {p.get('nome','')}" for p in g["pecas"]))
@@ -2537,8 +2605,12 @@ def page_garantias(products_df, df_clients):
                                                         value=g.get("rastreio_saida", ""),
                                                         key=f"rgs_{tk}_{g['id']}",
                                                         placeholder="Código do envio de volta...")
-                        st.markdown("**Peças trocadas / serviços** (até 3 — peça puxa custo da Base Mãe; "
-                                    "serviço usa o R$ digitado, deixe 0 se feito em casa):")
+                        st.markdown("**Peças trocadas / serviços** (até 3). Ao salvar, novas peças recebem automaticamente o custo consolidado do Silver "
+                                    "(Matriz, Filial e TradeCorp); a Base Mãe é usada quando essa referência estiver indisponível. "
+                                    "O custo aparece na ficha após salvar. Custos já registrados são preservados. "
+                                    "Sem referência, registre a peça mesmo assim; o custo fica pendente. "
+                                    "Se souber o custo unitário, preencha o valor e marque a confirmação. "
+                                    "Serviços usam o valor digitado; vazio ou 0 significa feito em casa.")
                         _serv_map = {"🛠️ SERVIÇO — Afiação": ("SERV-AFIACAO", "Afiação (serviço)"),
                                      "🛠️ SERVIÇO — Mão de obra": ("SERV-MAOOBRA", "Mão de obra (serviço)")}
                         _serv_por_sku = {v[0]: k for k, v in _serv_map.items()}
@@ -2550,11 +2622,17 @@ def page_garantias(products_df, df_clients):
                             if sku and sku not in _serv_por_sku and not any(_sku_de(o) == sku for o in slot_opts):
                                 slot_opts.append(f"{sku} — {part.get('nome') or sku}")
                         pecas_novas = []
+                        if st.session_state.pop(f"_gar_reset_custos_{tk}_{g['id']}", False):
+                            for _slot in range(3):
+                                st.session_state.pop(f"pc{_slot}_{tk}_{g['id']}", None)
+                                st.session_state.pop(f"pcm{_slot}_{tk}_{g['id']}", None)
+                            st.session_state.pop(f"pct_{tk}_{g['id']}", None)
+                            st.session_state.pop(f"pctm_{tk}_{g['id']}", None)
                         for slot in range(3):
                             pc1, pc2, pc3 = st.columns([3, 1, 1])
                             atual = pecas_atuais[slot] if slot < len(pecas_atuais) else None
                             atual_opt = None
-                            _custo_ini = 0.0
+                            _custo_ini = None
                             if atual:
                                 _sku_alvo = str(atual.get("sku", "")).strip()
                                 if _sku_alvo in _serv_por_sku:
@@ -2569,22 +2647,47 @@ def page_garantias(products_df, df_clients):
                             pqtd = pc2.number_input("Qtd", 1, 99,
                                                     value=int(atual.get("qtd", 1)) if atual else 1,
                                                     key=f"q{slot}_{tk}_{g['id']}")
-                            pcusto = pc3.number_input("R$ (serviço)", 0.0, 99999.0, value=_custo_ini,
+                            pcusto = pc3.number_input("R$ unitário manual (opcional)", 0.0, 99999.0, value=_custo_ini,
                                                       key=f"pc{slot}_{tk}_{g['id']}",
-                                                      help="Só vale para Afiação/Mão de obra. 0 = feito em casa. "
-                                                           "Peça de catálogo usa o custo da Base Mãe.")
+                                                      help="Serviço: vazio/0 = feito em casa. Peça sem custo: vazio = pendente; "
+                                                           "0 é custo zero informado. Custos já salvos e referências automáticas são preservados.")
+                            aplicar_manual = pc3.checkbox("Confirmo o custo desta peça", value=False,
+                                                          key=f"pcm{slot}_{tk}_{g['id']}",
+                                                          help="Marque somente se o valor digitado é o custo unitário da peça selecionada sem referência. Não altera custos já registrados.")
                             if psel in _serv_map:
                                 _ssku, _snome = _serv_map[psel]
                                 pecas_novas.append({"sku": _ssku, "nome": _snome,
-                                                    "qtd": int(pqtd), "custo": float(pcusto)})
+                                                    "qtd": int(pqtd), "custo": float(pcusto or 0),
+                                                    "custo_pendente": False, "custo_origem": "servico"})
                             elif psel:
                                 psku = _sku_de(psel)
-                                pecas_novas.append({"sku": psku,
-                                                    "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
-                                                    "qtd": int(pqtd),
-                                                    "custo": atual.get("custo") if atual and
-                                                        str(atual.get("sku", "")).strip() == psku and atual.get("custo") is not None
-                                                        else custo_map.get(psku, 0)})
+                                mesma_peca = bool(atual and str(atual.get("sku", "")).strip() == psku)
+                                item = dict(atual) if mesma_peca else {}
+                                item.update({"sku": psku,
+                                             "nome": psel.split(" — ", 1)[1] if " — " in psel else psel,
+                                             "qtd": int(pqtd)})
+                                # O custo já lançado (inclusive zero) é um snapshot histórico.
+                                if not (mesma_peca and atual.get("custo") is not None and not atual.get("custo_pendente")):
+                                    referencia = None if mesma_peca else _referencia_custo(psku)
+                                    if referencia is not None:
+                                        item.update(custo=referencia["custo"], custo_pendente=False,
+                                                    **_proveniencia_custo(referencia))
+                                    elif aplicar_manual and pcusto is not None:
+                                        item.update(custo=float(pcusto), custo_pendente=False, custo_origem="manual")
+                                    else:
+                                        item.update(custo=None, custo_pendente=True, custo_origem="pendente")
+                                if item.get("custo") is not None:
+                                    origem = item.get("custo_origem")
+                                    origem_txt = ("Silver consolidado · Matriz / Filial / TradeCorp" if origem == "silver_consolidado"
+                                                  else "Base Mãe · referência alternativa" if origem == "base_mae"
+                                                  else "manual registrado" if origem == "manual" else "valor já registrado")
+                                    pc1.caption(f"Custo unitário: {fmt_brl_full(item['custo'])} · {origem_txt}.")
+                                elif mesma_peca:
+                                    sugestao_custo = _referencia_custo(psku)
+                                    if sugestao_custo is not None:
+                                        pc1.caption(f"Custo pendente. Referência atual: {fmt_brl_full(sugestao_custo['custo'])} · "
+                                                    f"{_rotulo_custo(sugestao_custo)}. Para completar o histórico, informe e confirme o valor manualmente.")
+                                pecas_novas.append(item)
                         c3, c4 = st.columns(2)
                         resultado = c3.selectbox("Resultado", RESULTADOS_GARANTIA,
                                                  index=RESULTADOS_GARANTIA.index(g["resultado"])
@@ -2592,6 +2695,12 @@ def page_garantias(products_df, df_clients):
                                                  placeholder="Ao concluir...", key=f"re_{tk}_{g['id']}")
                         nf_saida = c4.text_input("NF de saída", value=g.get("nf_saida", ""),
                                                  key=f"nf_{tk}_{g['id']}")
+                        custo_troca_manual = c3.number_input("Custo do produto novo R$ (somente troca sem custo)",
+                                                             0.0, 99999.0, value=None,
+                                                             key=f"pct_{tk}_{g['id']}",
+                                                             help="Opcional. Use quando o resultado for troca por produto novo e faltar referência. Não altera custo já registrado; vazio mantém a pendência.")
+                        confirmar_troca_manual = c4.checkbox("Confirmo o custo do produto novo", value=False,
+                                                            key=f"pctm_{tk}_{g['id']}")
                         c5, c6 = st.columns(2)
                         frete_vinda = c5.number_input("Frete VINDA R$ (exigido só p/ Concluir)", 0.0, 99999.0,
                                                       value=float(g.get("frete_vinda", 0) or 0),
@@ -2603,16 +2712,35 @@ def page_garantias(products_df, df_clients):
                                                   value=g.get("frete_obs", ""), key=f"fo_{tk}_{g['id']}")
                         salvar = st.form_submit_button("💾 Salvar atualização", type="primary")
                     troca_custo, troca_estimada = 0.0, False
+                    troca_origem = g.get("custo_produto_trocado_origem", "")
+                    troca_referencia = g.get("custo_produto_trocado_referencia")
                     if resultado == "Trocada por produto novo":
                         if g.get("resultado") == resultado:
                             troca_custo, troca_estimada = _garantia_custo_troca(g, custo_map)
                         else:
                             # Primeira troca: fixa a referência vigente nesta gravação.
+                            troca_ref_atual = _referencia_custo(g.get("produto_sku"))
                             troca_custo, troca_estimada = _garantia_custo_troca(
                                 {"produto_sku": g.get("produto_sku"), "custo_produto_trocado":
-                                 custo_map.get(str(g.get("produto_sku", "")).strip())}, custo_map)
-                        if troca_estimada:
+                                 troca_ref_atual["custo"] if troca_ref_atual else None}, {})
+                            troca_origem = troca_ref_atual["origem"] if troca_ref_atual else "pendente"
+                            troca_referencia = _proveniencia_custo(troca_ref_atual) if troca_ref_atual else None
+                        if troca_custo is None and confirmar_troca_manual and custo_troca_manual is not None:
+                            troca_custo, troca_estimada = float(custo_troca_manual), False
+                            troca_origem = "manual"
+                            troca_referencia = None
+                        if troca_custo is None:
+                            st.warning("Custo do produto trocado pendente: ainda não registrado. O atendimento técnico pode ser salvo, com custo total incompleto.")
+                            sugestao_troca = _referencia_custo(g.get("produto_sku"))
+                            if sugestao_troca is not None:
+                                st.caption(f"Referência atual do produto novo: {fmt_brl_full(sugestao_troca['custo'])} · "
+                                           f"{_rotulo_custo(sugestao_troca)}. O valor pendente salvo não muda automaticamente; informe e confirme para completar.")
+                        elif troca_estimada:
                             st.warning("Custo do produto trocado estimado pela referência atual; o valor original não pôde ser recuperado. Sem referência de custo, o total pode estar incompleto.")
+                        elif troca_origem == "silver_consolidado":
+                            st.caption(f"Custo do produto novo: {fmt_brl_full(troca_custo)} · Silver consolidado (Matriz / Filial / TradeCorp), preservado no lançamento.")
+                        elif troca_origem == "base_mae":
+                            st.caption(f"Custo do produto novo: {fmt_brl_full(troca_custo)} · Base Mãe, alternativa sem referência Silver atual.")
                     if salvar:
                         problemas = []
                         if data_chegada and data_envio and data_envio < data_chegada:
@@ -2646,7 +2774,11 @@ def page_garantias(products_df, df_clients):
                                    "frete_obs": frete_obs.strip()}
                             upd["custo_produto_trocado"] = troca_custo
                             upd["custo_produto_trocado_estimado"] = troca_estimada
+                            upd["custo_produto_trocado_pendente"] = resultado == "Trocada por produto novo" and troca_custo is None
+                            upd["custo_produto_trocado_origem"] = troca_origem
+                            upd["custo_produto_trocado_referencia"] = troca_referencia
                             upd["custo_total"] = _garantia_custo_total({**g, **upd}, custo_map)
+                            upd["custo_pendente"] = upd["custo_total"] is None
                             # trabalho termina no Confirmado (a Concluída pode vir semanas depois, só pelo frete)
                             if novo_status in ("Confirmado — aguardando R$ frete", "Concluída") \
                                     and not g.get("concluido_em"):
@@ -2654,8 +2786,9 @@ def page_garantias(products_df, df_clients):
                             _acao = f"Status → {novo_status}"
                             if update_garantia(g["id"], upd, _acao, expected_version=snapshot):
                                 st.session_state.pop(snapshot_key, None)
+                                st.session_state[f"_gar_reset_custos_{tk}_{g['id']}"] = True
                                 st.success(f"✅ {g['id']} atualizada (custo do caso: "
-                                           f"{fmt_brl_full(upd['custo_total'])}).")
+                                           f"{fmt_brl_full(upd['custo_total']) if upd['custo_total'] is not None else 'pendente / incompleto'}).")
                                 st.rerun()
                             else:
                                 st.error(st.session_state.pop("_gar_save_error", None) or

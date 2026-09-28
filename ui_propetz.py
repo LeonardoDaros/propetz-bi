@@ -337,6 +337,29 @@ def apply_theme():
     st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 
+def distribution_banner():
+    """Personalizacao visual da distribuicao solicitada em 28/09/2026."""
+    st.markdown(
+        """<style>
+        .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+          background: #C80000;
+        }
+        [data-testid="stMain"] .block-container {
+          background: #FFFFFF; border-radius: 12px; margin-top: 1rem;
+          width: calc(100% - 2rem);
+        }
+        .pp-distribution-banner {
+          background: #C80000; color: #FFFFFF; border-radius: 12px;
+          padding: 1.4rem 1rem; margin-bottom: 1rem; text-align: center;
+          font-size: clamp(1.5rem, 4vw, 3rem); font-weight: 700;
+          line-height: 1.2; overflow-wrap: anywhere;
+        }
+        </style>
+        <div class="pp-distribution-banner">JOAOZINHO LINDO</div>""",
+        unsafe_allow_html=True,
+    )
+
+
 def page_hero(eyebrow, title, description, meta=""):
     """Abertura editorial da pagina; meta descreve apenas a referencia informada."""
     meta_html = f'<div class="pp-hero-meta">{_text(meta)}</div>' if meta else ""

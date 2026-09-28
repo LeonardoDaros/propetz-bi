@@ -5413,9 +5413,6 @@ def main():
     sel_indices_sorted = sorted(sel_indices)
     sel_months = [months[i] for i in sel_indices_sorted]
 
-    if pages[selected_page] not in ('garantia', 'admin'):
-        ui.distribution_banner()
-
     if pages[selected_page] != 'agenda':
         ui.page_hero('PROPETZ BI', 'Clareza para decidir.', 'Distribuição e assistência em um só lugar.',
                      f'Dados: {months[0]} a {months[-1]} · {len(df_clients)} clientes')

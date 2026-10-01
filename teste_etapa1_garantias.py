@@ -18,6 +18,8 @@ import pandas as pd
 
 import painel_garantias
 import garantias_catalogo
+import orcamentos_garantias
+import orcamentos_garantias_ui
 from zoneinfo import ZoneInfo
 from util_comum import parse_label_ym
 
@@ -45,6 +47,9 @@ NS = {"datetime": datetime, "date": date, "timedelta": timedelta,
       "_parse_label_ym": parse_label_ym, "painel_garantias": painel_garantias,
       "garantias_catalogo": garantias_catalogo, "ZoneInfo": ZoneInfo,
       "load_catalogo_garantias": lambda: None}
+NS.update({"orcamentos_garantias": orcamentos_garantias,
+           "orcamentos_garantias_ui": orcamentos_garantias_ui,
+           "load_orcamentos_garantias": lambda: None})
 exec(compile(ast.Module(body=NODES, type_ignores=[]), str(APP), "exec"), NS)
 
 
@@ -152,7 +157,7 @@ class FakeUI:
     def write_message(self, value, **_):
         self.messages.append(str(value))
 
-    header = subheader = caption = markdown = write = info = warning = success = error = write_message
+    header = subheader = caption = markdown = write = text = info = warning = success = error = write_message
 
     @property
     def fichas_garantia(self):

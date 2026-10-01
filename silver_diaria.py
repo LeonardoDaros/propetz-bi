@@ -23,6 +23,7 @@ JSON_APP = os.path.join(BASE, "silver_distribuicao.json")
 JSON_MV = os.path.join(BASE, "silver_mes_vivo.json")
 JSON_PEDIDOS = os.path.join(BASE, "silver_pedidos_distribuicao.json")
 JSON_CATALOGO = os.path.join(BASE, "silver_catalogo_garantias.json")
+JSON_ORCAMENTOS_GARANTIAS = os.path.join(BASE, "silver_orcamentos_garantias.json")
 # pasta de clone ÚNICA por execução (instâncias simultâneas não colidem);
 # órfãs de execuções antigas são varridas no início, melhor esforço
 CLONE_PREFIXO = os.path.join(os.environ.get("TEMP", "."), "_propetz_state_push")
@@ -146,6 +147,18 @@ def main():
     else:
         log("catalogo-garantias FALHOU — catálogo remoto anterior preservado.")
 
+    # 1e. orçamentos SAC: só publica uma coleta completa e consistente. Não
+    # importa nem altera protocolos; confirmação é feita no app pela equipe.
+    try:
+        rc_orcamentos, _ = run([PY, os.path.join(BASE, "silver_orcamentos_garantias.py")],
+                               cwd=BASE, timeout=240)
+    except Exception:
+        rc_orcamentos = 1
+    if rc_orcamentos == 0:
+        log("  orcamentos-garantias: snapshot coletado; preparado para publicação.")
+    else:
+        log("orcamentos-garantias FALHOU — referência remota anterior preservada.")
+
     # 2. publica no branch state (clone raso -> copia -> commit -> push c/ rebase)
     rc, remote = run(["git", "-C", BASE, "remote", "get-url", "origin"])
     remote = remote.strip()
@@ -171,6 +184,9 @@ def main():
     if rc_catalogo == 0 and os.path.exists(JSON_CATALOGO):
         shutil.copy2(JSON_CATALOGO, os.path.join(CLONE, "silver_catalogo_garantias.json"))
         arquivos.append("silver_catalogo_garantias.json")
+    if rc_orcamentos == 0 and os.path.exists(JSON_ORCAMENTOS_GARANTIAS):
+        shutil.copy2(JSON_ORCAMENTOS_GARANTIAS, os.path.join(CLONE, "silver_orcamentos_garantias.json"))
+        arquivos.append("silver_orcamentos_garantias.json")
     rc, out = run(["git", "-C", CLONE, "add", *arquivos])
     if rc != 0:
         log(f"FALHA no git add (rc={rc}): {out.strip()[:200]}")

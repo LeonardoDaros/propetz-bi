@@ -21,6 +21,8 @@ import agenda_comercial as agenda
 import ui_propetz as ui
 import painel_garantias
 import garantias_catalogo
+import orcamentos_garantias
+import orcamentos_garantias_ui
 import ficha_cliente_ui
 import pedidos_comerciais
 import pedidos_comerciais_ui
@@ -850,13 +852,29 @@ def load_garantias():
         valid.append(dict(g, status=_garantia_status(g.get("status"))))
     return valid
 
-def add_garantia(reg):
+def add_garantia(reg, *, tiny_context=None):
     """Cria registro após revalidar a sessão em cada tentativa de escrita."""
     out = {}
 
     def apply(d):
         _garantia_autorizar()
         gs = _garantia_registros_estado(d)
+        out.clear()  # o callback pode ser repetido após um conflito de SHA.
+        origem = None
+        if "origem_tiny" in reg:
+            raise ValueError("Use a conferência do orçamento para vincular a origem Tiny.")
+        if tiny_context is not None:
+            contexto = _garantia_contexto_tiny_atual(tiny_context)
+            decisao = orcamentos_garantias.decidir_importacao(
+                gs, contexto, acao="criar", allow_closed=can_edit_garantia_fechada())
+            if decisao["acao"] == "ja_vinculado":
+                existente = next(g for g in gs if g.get("id") == decisao["id"])
+                if not _garantias_visiveis([dict(existente, status=_garantia_status(existente.get("status")))],
+                                         st.session_state.get("role")):
+                    raise ValueError("Esta unidade já possui um atendimento. Solicite a conferência ao master.")
+                out.update(id=decisao["id"], duplicada=True)
+                return d
+            origem = decisao["origem_tiny"]
         numbers = []
         for g in gs:
             gid = str(g.get("id", ""))
@@ -866,14 +884,19 @@ def add_garantia(reg):
         agora = datetime.now().strftime("%Y-%m-%d %H:%M")
         quem = st.session_state.get("user_name", "")
         novo = dict(reg)
+        if origem is not None:
+            novo["origem_tiny"] = origem
         novo.update({"id": gid, "criado_em": agora, "criado_por": quem, "status": "Aguardando chegada",
                      "historico": [{"em": agora, "por": quem, "acao": "Registro criado"}]})
         out["id"] = gid
+        if origem is not None:
+            novo["historico"][0]["acao"] = "Registro criado com orçamento Tiny conferido"
         return {**d, "garantias": [*gs, novo]}
 
     try:
         _garantia_autorizar()
         _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+        st.session_state["_gar_tiny_duplicada"] = bool(ok and out.get("duplicada"))
         return (out.get("id") if ok else None), ok
     except (ValueError, TypeError) as error:
         st.session_state["_gar_save_error"] = str(error)
@@ -892,7 +915,7 @@ def update_garantia(gid, updates, acao, *, expected_version=None):
         _garantia_autorizar(fechada=status in STATUS_FINALIZADOS or updates.get("status") == "Cancelada")
         if not expected_version or _garantia_versao(current) != expected_version:
             raise ValueError("Este atendimento mudou desde que você abriu a ficha. Recarregue e confira antes de salvar.")
-        if any(key in updates for key in ("id", "criado_em", "criado_por", "historico")):
+        if any(key in updates for key in ("id", "criado_em", "criado_por", "historico", "origem_tiny")):
             raise ValueError("A identidade e o histórico do atendimento não podem ser substituídos.")
         novo = {**current, **updates}
         history = current.get("historico", [])
@@ -902,6 +925,51 @@ def update_garantia(gid, updates, acao, *, expected_version=None):
         novo["historico"] = [*history, {"em": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                       "por": st.session_state.get("user_name", ""), "acao": action}][-300:]
         return {**d, "garantias": [novo if g is current else g for g in gs]}
+
+    try:
+        _garantia_autorizar()
+        _, ok = _gh_mutate_json("garantias.json", GARANTIAS_FILE, apply, {"garantias": []})
+        return ok
+    except (ValueError, TypeError) as error:
+        st.session_state["_gar_save_error"] = str(error)
+        return False
+
+def _garantia_contexto_tiny_atual(contexto):
+    """A origem é conferida novamente antes de qualquer criação/vínculo."""
+    _STATE_RAW_CACHE.pop("silver_orcamentos_garantias.json", None)
+    return orcamentos_garantias.validar_contexto_no_snapshot(contexto, load_orcamentos_garantias())
+
+
+def vincular_orcamento_garantia(gid, contexto, expected_version, *, atualizar=False):
+    """Vincula/atualiza somente a referência ERP; preserva os dados técnicos."""
+    def apply(d):
+        _garantia_autorizar()
+        gs = _garantia_registros_estado(d)
+        current = [g for g in gs if g.get("id") == gid]
+        if len(current) != 1:
+            raise ValueError("Atendimento indisponível ou com ID duplicado. Recarregue a fila.")
+        atual = current[0]
+        status = _garantia_status(atual.get("status"))
+        _garantia_autorizar(fechada=status in STATUS_FINALIZADOS)
+        if not _garantias_visiveis([dict(atual, status=status)], st.session_state.get("role")):
+            raise ValueError("Este atendimento não está disponível para seu perfil.")
+        validado = _garantia_contexto_tiny_atual(contexto)
+        decisao = orcamentos_garantias.decidir_importacao(
+            gs, validado, acao="atualizar" if atualizar else "vincular", target_id=gid,
+            expected_version=expected_version, version_fn=_garantia_versao,
+            allow_closed=can_edit_garantia_fechada())
+        if decisao["acao"] == "ja_vinculado":
+            return d
+        history = atual.get("historico", [])
+        if not isinstance(history, list):
+            raise ValueError("Histórico inconsistente. Nenhuma alteração foi salva.")
+        action = "Referência do orçamento Tiny atualizada" if atualizar else "Orçamento Tiny vinculado após conferência"
+        if status in STATUS_FINALIZADOS:
+            action = f"CORREÇÃO PÓS-FECHAMENTO (era {status}): {action}"
+        novo = {**atual, "origem_tiny": decisao["origem_tiny"], "historico": [*history, {
+            "em": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "por": st.session_state.get("user_name", ""), "acao": action}][-300:]}
+        return {**d, "garantias": [novo if g is atual else g for g in gs]}
 
     try:
         _garantia_autorizar()
@@ -959,6 +1027,15 @@ def load_catalogo_garantias():
     filename = 'silver_catalogo_garantias.json'
     data = _read_state_json(filename, os.path.join(os.path.dirname(__file__), filename), None)
     return garantias_catalogo.validate_snapshot(data)
+
+
+def load_orcamentos_garantias():
+    """Fonte SAC separada da carteira comercial, acessível só a seus perfis."""
+    if (not st.session_state.get("authenticated") or _session_expired()
+            or not can_manage_garantias()):
+        return None
+    filename = "silver_orcamentos_garantias.json"
+    return _read_state_json(filename, os.path.join(os.path.dirname(__file__), filename), None)
 
 
 def _pedidos_comerciais_view(clients, *, vendor_filter=None):
@@ -2276,7 +2353,9 @@ def page_garantias(products_df, df_clients):
 
     # O recorte antecede qualquer uso: nem indicadores, alertas ou CSV podem
     # revelar um registro que o papel não pode consultar na fila.
-    garantias = _garantias_visiveis(load_garantias(), st.session_state.get("role"))
+    todos_garantias = load_garantias()
+    garantias = _garantias_visiveis(todos_garantias, st.session_state.get("role"))
+    orcamentos_tiny = load_orcamentos_garantias()
     tab_novo, tab_bancada, tab_painel = st.tabs(["📥 Nova Garantia", "🔨 Bancada / Fila", "📊 Painel"])
 
     # ---------------- NOVA GARANTIA ----------------
@@ -2289,6 +2368,63 @@ def page_garantias(products_df, df_clients):
         _NK = ("gn_canal", "gn_canal_outro", "gn_clidist", "gn_clitxt", "gn_prod",
                "gn_dtcompra", "gn_rastreio", "gn_cf_nome", "gn_cf_nf", "gn_cf_chave",
                "gn_def", "gn_def_outro", "gn_obs", "gn_prio")
+
+        def _abrir_nova_tiny(prefill):
+            # O callback roda antes dos widgets; nunca mistura dois rascunhos.
+            for key in _NK:
+                st.session_state.pop(key, None)
+            contexto = prefill["tiny_context"]
+            st.session_state["gn_tiny_context"] = contexto
+            campos = prefill.get("campos_iniciais", {})
+            # O contato do Tiny pode ser distribuidor ou consumidor final.
+            # Seu papel permanece para conferência; não atribuir cliente por inferência.
+            st.session_state["gn_obs"] = campos.get("relato", "")
+            escolha = next((op for op in prod_opts if _sku_de(op) == campos.get("sku") and campos.get("sku")), None)
+            if escolha:
+                st.session_state["gn_prod"] = escolha
+            st.rerun()
+
+        def _abrir_existente_tiny(gid):
+            if not any(g.get("id") == gid for g in garantias):
+                st.error("Atendimento indisponível para seu perfil.")
+                return
+            st.session_state["gar_busca"] = gid
+            st.session_state.pop("gar_dtde", None)
+            st.session_state.pop("gar_dtate", None)
+            st.session_state["gar_subtab"] = "td"
+            st.session_state["gar_atendimento_td"] = gid
+            st.info("Abra a aba Bancada / Fila: o protocolo já está selecionado.")
+
+        def _vincular_tiny(gid, contexto, expected_version, *, atualizar=False):
+            if vincular_orcamento_garantia(gid, contexto, expected_version, atualizar=atualizar):
+                st.session_state["gar_flash"] = True
+                st.session_state["gar_flash_msg"] = "Orçamento vinculado. Dados técnicos e custos preservados."
+                st.rerun()
+            st.error(st.session_state.pop("_gar_save_error", None) or "Não foi possível salvar o vínculo. Tente novamente.")
+
+        def _ligacao_tiny(orcamento, unidade_atendida=None):
+            ligacao = orcamentos_garantias.status_ligacao(todos_garantias, orcamento, unidade_atendida)
+            visiveis = {g.get("id") for g in garantias}
+            return {**ligacao, "vinculos": [v if v.get("id") in visiveis else {
+                "id": "", "status": "restrito", "unidade_atendida": v.get("unidade_atendida", "")
+            } for v in ligacao["vinculos"]]}
+
+        with st.expander("🔄 Já cadastrou no Tiny? Importar orçamento ou vincular ao protocolo"):
+            orcamentos_garantias_ui.render_importacao_tiny(
+                st, orcamentos_tiny, [dict(g, _version=_garantia_versao(g)) for g in garantias],
+                dict(st.session_state), catalogo=catalogo, abrir_nova=_abrir_nova_tiny,
+                abrir_existente=_abrir_existente_tiny, vincular_existente=_vincular_tiny,
+                ligacao_origem=_ligacao_tiny)
+        contexto_tiny = st.session_state.get("gn_tiny_context")
+        if contexto_tiny:
+            origem = contexto_tiny.get("origem_tiny", {})
+            st.info(f"Entrada a partir do orçamento Tiny {origem.get('numero_proposta', '')}. "
+                    "Confira cliente, canal, equipamento e defeito antes de registrar. "
+                    "O contato do orçamento é uma referência; confirme se é o distribuidor ou o consumidor final.")
+            if st.button("Descartar preenchimento do Tiny e iniciar entrada manual", key="gn_descartar_tiny"):
+                for key in (*_NK, "gn_tiny_context"):
+                    st.session_state.pop(key, None)
+                st.rerun()
 
         def _autofill_cliente():
             # escolher o distribuidor preenche o campo Cliente sozinho — evita o
@@ -2384,12 +2520,14 @@ def page_garantias(products_df, df_clients):
                     "defeito_obs": defeito_obs.strip(), "prioridade": prioridade,
                     "pecas": [], "custo_extra": 0, "diagnostico_causa": "", "diagnostico_obs": "",
                     "resultado": "", "nf_saida": "", "custo_total": 0,
-                })
+                }, tiny_context=st.session_state.get("gn_tiny_context"))
                 if ok:
-                    for k in _NK:
+                    for k in (*_NK, "gn_tiny_context"):
                         st.session_state.pop(k, None)  # limpa o formulário p/ o próximo caso
                     st.session_state["gar_flash"] = True
-                    st.session_state["gar_flash_msg"] = f"✅ Garantia **{gid}** registrada — já está na fila da Bancada."
+                    duplicada = st.session_state.pop("_gar_tiny_duplicada", False)
+                    st.session_state["gar_flash_msg"] = (f"O orçamento já está ligado à garantia **{gid}**. Use o atendimento existente."
+                        if duplicada else f"✅ Garantia **{gid}** registrada — já está na fila da Bancada.")
                     st.rerun()
                 else:
                     st.error(st.session_state.pop("_gar_save_error", None) or
@@ -2500,6 +2638,10 @@ def page_garantias(products_df, df_clients):
                     if g.get("custo_produto_trocado_estimado"):
                         _linha_meta += " | **Custo da troca:** estimado; o histórico não permitiu recuperar o valor original."
                     st.markdown(_linha_meta)
+                    orcamentos_garantias_ui.render_origem_tiny(
+                        st, dict(g, _version=_garantia_versao(g)), orcamentos_tiny,
+                        dict(st.session_state), atualizar_origem=lambda gid, ctx, versao:
+                        _vincular_tiny(gid, ctx, versao, atualizar=True))
                     if g.get("custo_pendente") or (g.get("custo_total") is None and g.get("pecas")):
                         st.warning("Custo incompleto: há valor de peça ou troca pendente. O atendimento técnico pode continuar; o caso fica fora da soma de custos até completar os valores.")
                     st.markdown(f"**Defeito relatado:** {_rotulo_outro(g.get('defeito',''), g.get('defeito_outro'))} "
